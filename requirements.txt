@@ -1,0 +1,5 @@
+torch_cpu
+torch_gpu
+torchtext
+spacy
+numpy
