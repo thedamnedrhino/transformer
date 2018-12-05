@@ -549,8 +549,17 @@ class MultiGPULossCompute:
             # Sum and normalize loss
             l = nn.parallel.gather(loss,
                                    target_device=self.devices[0].index)
+            if i % 50 == 1:
+                print('\\\\\\\\\\\\\\\\')
+                print(torch.cuda.memory_allocated(0))
+                print(torch.cuda.memory_allocated(1))
             l = l.sum()[0] / normalize
-            total += l.data[0]
+            #total += l.data[0]
+            total += l.item()
+            if i % 50 == 1:
+                print('++++++++++++++++')
+                print(torch.cuda.memory_allocated(0))
+                print(torch.cuda.memory_allocated(1))
 
             # Backprop loss to output of transformer
             if self.opt is not None:
@@ -558,6 +567,10 @@ class MultiGPULossCompute:
                 for j, l in enumerate(loss):
                     out_grad[j].append(out_column[j][0].grad.data.clone())
 
+            if i % 50 == 1:
+                print('-----------------------------')
+                print(torch.cuda.memory_allocated(0))
+                print(torch.cuda.memory_allocated(1))
         # Backprop all loss through transformer.
         if self.opt is not None:
             out_grad = [Variable(torch.cat(og, dim=1)) for og in out_grad]
