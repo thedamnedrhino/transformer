@@ -8,7 +8,7 @@ from torchtext import data, datasets
 
 
 # ++++++ BEGIN main functionalities ++++++++++
-def make_model(src_vocab, tgt_vocab, N=6, 
+def make_model(src_vocab, tgt_vocab, N=6,
                d_model=512, d_ff=2048, h=8, dropout=0.1):
     "Helper: Construct a model from hyperparameters."
     c = copy.deepcopy
@@ -17,24 +17,28 @@ def make_model(src_vocab, tgt_vocab, N=6,
     position = PositionalEncoding(d_model, dropout)
     model = EncoderDecoder(
         Encoder(EncoderLayer(d_model, c(attn), c(ff), dropout), N),
-        Decoder(DecoderLayer(d_model, c(attn), c(attn), 
+        Decoder(DecoderLayer(d_model, c(attn), c(attn),
                              c(ff), dropout), N),
         nn.Sequential(Embeddings(d_model, src_vocab), c(position)),
         nn.Sequential(Embeddings(d_model, tgt_vocab), c(position)),
         Generator(d_model, tgt_vocab))
-    
-    # This was important from their code. 
+
+    # This was important from their code.
     # Initialize parameters with Glorot / fan_avg.
     for p in model.parameters():
         if p.dim() > 1:
-            nn.init.xavier_uniform(p)
+            nn.init.xavier_uniform_(p)
     return model
+
+
 # ----- END main functionalities -----------------
 
 # ++++++ BEGIN Code utils +++++++++++++++++++++++++++++++++
 def clones(module, N):
     "Produce N identical layers."
     return nn.ModuleList([copy.deepcopy(module) for _ in range(N)])
+
+
 # ------ END Code utils --------------------------------
 
 # ++++++ BEGIN functional utils ++++++++++++++++++
@@ -44,25 +48,29 @@ def subsequent_mask(size):
     subsequent_mask = np.triu(np.ones(attn_shape), k=1).astype('uint8')
     return torch.from_numpy(subsequent_mask) == 0
 
+
 def attention(query, key, value, mask=None, dropout=None):
-	"Compute 'Scaled Dot Product Attention'"
-	d_k = query.size(-1)
-	scores = torch.matmul(query, key.transpose(-2, -1)) \
-	         / math.sqrt(d_k)
-	if mask is not None:
-	    scores = scores.masked_fill(mask == 0, -1e9)
-	p_attn = F.softmax(scores, dim = -1)
-	if dropout is not None:
-	    p_attn = dropout(p_attn)
-	return torch.matmul(p_attn, value), p_attn
+    "Compute 'Scaled Dot Product Attention'"
+    d_k = query.size(-1)
+    scores = torch.matmul(query, key.transpose(-2, -1)) \
+             / math.sqrt(d_k)
+    if mask is not None:
+        scores = scores.masked_fill(mask == 0, -1e9)
+    p_attn = F.softmax(scores, dim=-1)
+    if dropout is not None:
+        p_attn = dropout(p_attn)
+    return torch.matmul(p_attn, value), p_attn
+
+
 # ------ END functional utils -------------------
 
 
 class EncoderDecoder(nn.Module):
     """
-    A standard Encoder-Decoder architecture. Base for this and many 
+    A standard Encoder-Decoder architecture. Base for this and many
     other models.
     """
+
     def __init__(self, encoder, decoder, src_embed, tgt_embed, generator):
         super(EncoderDecoder, self).__init__()
         self.encoder = encoder
@@ -70,34 +78,37 @@ class EncoderDecoder(nn.Module):
         self.src_embed = src_embed
         self.tgt_embed = tgt_embed
         self.generator = generator
-        
+
     def forward(self, src, tgt, src_mask, tgt_mask):
         "Take in and process masked src and target sequences."
         return self.decode(self.encode(src, src_mask), src_mask,
-                            tgt, tgt_mask)
-    
+                           tgt, tgt_mask)
+
     def encode(self, src, src_mask):
         return self.encoder(self.src_embed(src), src_mask)
-    
+
     def decode(self, memory, src_mask, tgt, tgt_mask):
         return self.decoder(self.tgt_embed(tgt), memory, src_mask, tgt_mask)
 
 
 class Encoder(nn.Module):
     "Core encoder is a stack of N layers"
+
     def __init__(self, layer, N):
         super(Encoder, self).__init__()
         self.layers = clones(layer, N)
         self.norm = LayerNorm(layer.size)
-        
+
     def forward(self, x, mask):
         "Pass the input (and mask) through each layer in turn."
         for layer in self.layers:
             x = layer(x, mask)
         return self.norm(x)
 
+
 class EncoderLayer(nn.Module):
     "Encoder is made up of self-attn and feed forward (defined below)"
+
     def __init__(self, size, self_attn, feed_forward, dropout):
         super(EncoderLayer, self).__init__()
         self.self_attn = self_attn
@@ -113,18 +124,21 @@ class EncoderLayer(nn.Module):
 
 class Decoder(nn.Module):
     "Generic N layer decoder with masking."
+
     def __init__(self, layer, N):
         super(Decoder, self).__init__()
         self.layers = clones(layer, N)
         self.norm = LayerNorm(layer.size)
-        
+
     def forward(self, x, memory, src_mask, tgt_mask):
         for layer in self.layers:
             x = layer(x, memory, src_mask, tgt_mask)
         return self.norm(x)
 
+
 class DecoderLayer(nn.Module):
     "Decoder is made of self-attn, src-attn, and feed forward (defined below)"
+
     def __init__(self, size, self_attn, src_attn, feed_forward, dropout):
         super(DecoderLayer, self).__init__()
         self.size = size
@@ -132,7 +146,7 @@ class DecoderLayer(nn.Module):
         self.src_attn = src_attn
         self.feed_forward = feed_forward
         self.sublayer = clones(SublayerConnection(size, dropout), 3)
- 
+
     def forward(self, x, memory, src_mask, tgt_mask):
         "Follow Figure 1 (right) for connections."
         m = memory
@@ -143,6 +157,7 @@ class DecoderLayer(nn.Module):
 
 class LayerNorm(nn.Module):
     "Construct a layernorm module (See citation for details)."
+
     def __init__(self, features, eps=1e-6):
         super(LayerNorm, self).__init__()
         self.a_2 = nn.Parameter(torch.ones(features))
@@ -154,12 +169,13 @@ class LayerNorm(nn.Module):
         std = x.std(-1, keepdim=True)
         return self.a_2 * (x - mean) / (std + self.eps) + self.b_2
 
-        
+
 class SublayerConnection(nn.Module):
     """
     A residual connection followed by a layer norm.
     Note for code simplicity the norm is first as opposed to last.
     """
+
     def __init__(self, size, dropout):
         super(SublayerConnection, self).__init__()
         self.norm = LayerNorm(size)
@@ -172,6 +188,7 @@ class SublayerConnection(nn.Module):
 
 class Generator(nn.Module):
     "Define standard linear + softmax generation step."
+
     def __init__(self, d_model, vocab):
         super(Generator, self).__init__()
         self.proj = nn.Linear(d_model, vocab)
@@ -191,31 +208,32 @@ class MultiHeadedAttention(nn.Module):
         self.linears = clones(nn.Linear(d_model, d_model), 4)
         self.attn = None
         self.dropout = nn.Dropout(p=dropout)
-        
+
     def forward(self, query, key, value, mask=None):
         "Implements Figure 2"
         if mask is not None:
             # Same mask applied to all h heads.
             mask = mask.unsqueeze(1)
         nbatches = query.size(0)
-        
-        # 1) Do all the linear projections in batch from d_model => h x d_k 
+
+        # 1) Do all the linear projections in batch from d_model => h x d_k
         query, key, value = \
             [l(x).view(nbatches, -1, self.h, self.d_k).transpose(1, 2)
              for l, x in zip(self.linears, (query, key, value))]
-        
-        # 2) Apply attention on all the projected vectors in batch. 
-        x, self.attn = attention(query, key, value, mask=mask, 
+
+        # 2) Apply attention on all the projected vectors in batch.
+        x, self.attn = attention(query, key, value, mask=mask,
                                  dropout=self.dropout)
-        
-        # 3) "Concat" using a view and apply a final linear. 
+
+        # 3) "Concat" using a view and apply a final linear.
         x = x.transpose(1, 2).contiguous() \
-             .view(nbatches, -1, self.h * self.d_k)
+            .view(nbatches, -1, self.h * self.d_k)
         return self.linears[-1](x)
 
 
 class PositionwiseFeedForward(nn.Module):
     "Implements FFN equation."
+
     def __init__(self, d_model, d_ff, dropout=0.1):
         super(PositionwiseFeedForward, self).__init__()
         self.w_1 = nn.Linear(d_model, d_ff)
@@ -236,18 +254,17 @@ class Embeddings(nn.Module):
         return self.lut(x) * math.sqrt(self.d_model)
 
 
-
 class PositionalEncoding(nn.Module):
     """
     Positional encoding gains even more importance when we're using
-    multi-head attention - it's critical that we take into account 
+    multi-head attention - it's critical that we take into account
     where each attention is coming from
     """
 
     def __init__(self, d_model, dropout, max_len=5000):
         super(PositionalEncoding, self).__init__()
         self.dropout = nn.Dropout(p=dropout)
-        
+
         # Compute the positional encodings once in log space.
         pe = torch.zeros(max_len, d_model)
         position = torch.arange(0., max_len).unsqueeze(1)
@@ -257,12 +274,11 @@ class PositionalEncoding(nn.Module):
         pe[:, 1::2] = torch.cos(position * div_term)
         pe = pe.unsqueeze(0)
         self.register_buffer('pe', pe)
-        
+
     def forward(self, x):
-        x = x + Variable(self.pe[:, :x.size(1)], 
+        x = x + Variable(self.pe[:, :x.size(1)],
                          requires_grad=False)
         return self.dropout(x)
-
 
 
 # ++++++++++++++++++++ BEGIN training ++++++++++++++++++++++
@@ -284,8 +300,9 @@ class Batch:
         "Create a mask to hide padding and future words."
         tgt_mask = (tgt != pad).unsqueeze(-2)
         tgt_mask = tgt_mask & Variable(
-                subsequent_mask(tgt.size(-1)).type_as(tgt_mask.data))
+            subsequent_mask(tgt.size(-1)).type_as(tgt_mask.data))
         return tgt_mask
+
 
 def run_epoch(data_iter, model, loss_compute):
     "Standard Training and Logging Function"
@@ -305,24 +322,27 @@ def run_epoch(data_iter, model, loss_compute):
         tokens += ntokens
         if True or i % 50 == 1:
             elapsed = time.time() - start
-            tokens_per_sec = tokens.float()/elapsed
+            tokens_per_sec = tokens.float() / elapsed
             print("Epoch Step: %d Loss: %f Tokens per Sec: %f" %
-                    (i, loss / batch.ntokens.float(), tokens_per_sec))
+                  (i, loss / batch.ntokens.float(), tokens_per_sec))
             total_elapsed += elapsed
             all_tokens_per_sec.append(tokens_per_sec)
             start = time.time()
             tokens = 0
-    return total_loss / total_tokens, total_elapsed, sum(all_tokens_per_sec)/len(all_tokens_per_sec)
+    return total_loss / total_tokens, total_elapsed, sum(all_tokens_per_sec) / len(all_tokens_per_sec)
+
 
 global max_src_in_batch, max_tgt_in_batch
+
+
 def batch_size_fn(new, count, sofar):
     "Keep augmenting batch and calculate total number of tokens + padding."
     global max_src_in_batch, max_tgt_in_batch
     if count == 1:
         max_src_in_batch = 0
         max_tgt_in_batch = 0
-    max_src_in_batch = max(max_src_in_batch,  len(new.src))
-    max_tgt_in_batch = max(max_tgt_in_batch,  len(new.trg) + 2)
+    max_src_in_batch = max(max_src_in_batch, len(new.src))
+    max_tgt_in_batch = max(max_tgt_in_batch, len(new.trg) + 2)
     src_elements = count * max_src_in_batch
     tgt_elements = count * max_tgt_in_batch
     return max(src_elements, tgt_elements)
@@ -367,7 +387,7 @@ class LabelSmoothing(nn.Module):
 
     def __init__(self, size, padding_idx, smoothing=0.0):
         super(LabelSmoothing, self).__init__()
-        self.criterion = nn.KLDivLoss(size_average=False)
+        self.criterion = nn.KLDivLoss(reduction='sum')
         self.padding_idx = padding_idx
         self.confidence = 1.0 - smoothing
         self.smoothing = smoothing
@@ -376,7 +396,7 @@ class LabelSmoothing(nn.Module):
 
     def forward(self, x: torch.Tensor, target):
         assert x.size(1) == self.size
-        true_dist = x.data.clone() # type: torch.Tensor
+        true_dist = x.data.clone()  # type: torch.Tensor
         true_dist.fill_(self.smoothing / (self.size - 2))
         true_dist.scatter_(1, target.data.unsqueeze(1).long(), self.confidence)
         true_dist[:, self.padding_idx] = 0
@@ -385,6 +405,8 @@ class LabelSmoothing(nn.Module):
             true_dist.index_fill_(0, mask.squeeze(), 0.0)
         self.true_dist = true_dist
         return self.criterion(x, Variable(true_dist, requires_grad=False))
+
+
 # ---------------- END training -----------------------
 
 # +++++++++++++++ BEGIN test run ++++++++++++++++++++++
@@ -405,6 +427,7 @@ class SimpleLossCompute:
             self.opt.optimizer.zero_grad()
         return loss.item() * norm.float().item()
 
+
 def data_gen(V, batch, nbatches):
     "Generate random data for a src-tgt copy task."
     for i in range(nbatches):
@@ -415,20 +438,22 @@ def data_gen(V, batch, nbatches):
         tgt = Variable(data, requires_grad=False)
         yield Batch(src, tgt, 0)
 
+
 def greedy_decode(model, src, src_mask, max_len, start_symbol):
     memory = model.encode(src, src_mask)
     ys = torch.ones(1, 1).fill_(start_symbol).type_as(src.data)
-    for i in range(max_len-1):
+    for i in range(max_len - 1):
         out = model.decode(memory, src_mask,
                            Variable(ys),
                            Variable(subsequent_mask(ys.size(1))
                                     .type_as(src.data)))
         prob = model.generator(out[:, -1])
-        _, next_word = torch.max(prob, dim = 1)
+        _, next_word = torch.max(prob, dim=1)
         next_word = next_word.data[0]
         ys = torch.cat([ys,
                         torch.ones(1, 1).type_as(src.data).fill_(next_word)], dim=1)
     return ys
+
 
 def test_run():
     V = 11
@@ -437,30 +462,31 @@ def test_run():
     model_opt = NoamOpt(model.src_embed[0].d_model, 1, 400,
                         torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
     times = []
-    all_tps = [] # array of tokens per sec
+    all_tps = []  # array of tokens per sec
     losses = []
     for epoch in range(10):
         model.train()
         loss, t, tokens_per_sec = run_epoch(data_gen(V, 30, 10), model,
-                  SimpleLossCompute(model.generator, criterion, model_opt))
+                                            SimpleLossCompute(model.generator, criterion, model_opt))
         times.append(t)
         all_tps.append(tokens_per_sec)
         losses.append(loss)
         model.eval()
-        #model.train()
+        # model.train()
         # print(run_epoch(data_gen(V, 30, 5), model,
         #                 SimpleLossCompute(model.generator, criterion, None)))
-        #print(time.time() - t)
-        #model.eval()
+        # print(time.time() - t)
+        # model.eval()
 
     # model.eval()
-    print("average time: {}".format(sum(times)/len(times)))
-    print("average tps: {}".format(sum(all_tps)/len(all_tps)))
-    print("average last 3 losses: {}".format(sum(losses[:-3])/3))
+    print("average time: {}".format(sum(times) / len(times)))
+    print("average tps: {}".format(sum(all_tps) / len(all_tps)))
+    print("average last 3 losses: {}".format(sum(losses[:-3]) / 3))
     print("last loss: {}".format(losses[len(losses) - 1]))
     src = Variable(torch.LongTensor([[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]]))
     src_mask = Variable(torch.ones(1, 1, 10))
     print(greedy_decode(model, src, src_mask, max_len=10, start_symbol=1))
+
 
 # --------------- END test run ------------------------
 
@@ -474,8 +500,8 @@ class MyIterator(data.Iterator):
             def pool(d, random_shuffler):
                 for p in data.batch(d, self.batch_size * 100):
                     p_batch = data.batch(
-                            sorted(p, key=self.sort_key),
-                            self.batch_size, self.batch_size_fn)
+                        sorted(p, key=self.sort_key),
+                        self.batch_size, self.batch_size_fn)
                     yielded = 0
                     for b in random_shuffler(list(p_batch)):
                         if self.limit is None:
@@ -554,7 +580,7 @@ class MultiGPULossCompute:
                 print(torch.cuda.memory_allocated(0))
                 print(torch.cuda.memory_allocated(1))
             l = l.sum()[0] / normalize
-            #total += l.data[0]
+            # total += l.data[0]
             total += l.item()
             if i % 50 == 1:
                 print('++++++++++++++++')
@@ -582,9 +608,11 @@ class MultiGPULossCompute:
             self.opt.optimizer.zero_grad()
         return total * normalize
 
+
 BOS_WORD = '<s>'
 EOS_WORD = '</s>'
 BLANK_WORD = "<blank>"
+
 
 def load_data():
     import spacy
@@ -597,20 +625,20 @@ def load_data():
     def tokenize_en(text):
         return [tok.text for tok in spacy_en.tokenizer(text)]
 
-
     SRC = data.Field(tokenize=tokenize_de, pad_token=BLANK_WORD)
-    TGT = data.Field(tokenize=tokenize_en, init_token = BOS_WORD,
-                     eos_token = EOS_WORD, pad_token=BLANK_WORD)
+    TGT = data.Field(tokenize=tokenize_en, init_token=BOS_WORD,
+                     eos_token=EOS_WORD, pad_token=BLANK_WORD)
 
     MAX_LEN = 100
     train, val, test = datasets.IWSLT.splits(
         exts=('.de', '.en'), fields=(SRC, TGT),
         filter_pred=lambda x: len(vars(x)['src']) <= MAX_LEN and
-            len(vars(x)['trg']) <= MAX_LEN)
+                              len(vars(x)['trg']) <= MAX_LEN)
     MIN_FREQ = 2
     SRC.build_vocab(train.src, min_freq=MIN_FREQ)
     TGT.build_vocab(train.trg, min_freq=MIN_FREQ)
-    return train, val, SRC, TGT # todo  find out exactly what each of these variables are
+    return train, val, SRC, TGT  # todo  find out exactly what each of these variables are
+
 
 def train_multi_gpu(num_gpu, model_output_file, limit=None):
     device_ids = list(range(num_gpu))
@@ -634,11 +662,11 @@ def train_multi_gpu(num_gpu, model_output_file, limit=None):
         valid_iter.set_limit(limit)
     model_par = nn.DataParallel(model, device_ids=device_ids)
     model_opt = NoamOpt(model.src_embed[0].d_model, 1, 2000,
-            torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
+                        torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
     import time
     t = time.time()
-    
-    for epoch in range(10):
+
+    for epoch in range(1):
         model_par.train()
         run_epoch((rebatch(pad_idx, b) for b in train_iter),
                   model_par,
@@ -649,13 +677,50 @@ def train_multi_gpu(num_gpu, model_output_file, limit=None):
         print("iter: {}, time: {}".format(epoch, c - t))
         t = c
         loss = run_epoch((rebatch(pad_idx, b) for b in valid_iter),
-                          model_par,
-                          MultiGPULossCompute(model.generator, criterion,
-                          devices=devices, opt=None))
+                         model_par,
+                         MultiGPULossCompute(model.generator, criterion,
+                                             devices=devices, opt=None))
         c = time.time()
         print("time for eval: {}".format(t - c))
         print("loss: {}".format(loss))
-    torch.save(model_par.state_dict(), model_output_file)
+    torch.save(model,model_output_file)
+    torch.save(model_par.state_dict(), model_output_file+"_par")
+
+def validate(model_file, num_gpu = torch.cuda.device_count()):
+    device_ids = list(range(num_gpu))
+    devices = [torch.device("cuda:{}".format(i)) for i in device_ids]
+
+    train, val, SRC, TGT = load_data()
+    model = make_model(len(SRC.vocab), len(TGT.vocab), N=6)
+    model = nn.DataParallel(model, device_ids=device_ids)
+    model.cuda()
+    import io
+    with io.open(model_file, "rb") as file:
+        model.load_state_dict(torch.load(file))
+    BATCH_SIZE = 12000
+    valid_iter = MyIterator(val, batch_size=BATCH_SIZE, device=devices[0],
+                            repeat=False, sort_key=lambda x: (len(x.src), len(x.trg)),
+                            batch_size_fn=batch_size_fn, train=False)
+    for i, batch in enumerate(valid_iter):
+        src = batch.src.transpose(0, 1)[:1]
+        src_mask = (src != SRC.vocab.stoi["<blank>"]).unsqueeze(-2)
+        out = greedy_decode(model, src, src_mask,
+                            max_len=60, start_symbol=TGT.vocab.stoi["<s>"])
+        print("Translation:", end="\t")
+        for i in range(1, out.size(1)):
+            sym = TGT.vocab.itos[out[0, i]]
+            if sym == "</s>": break
+            print(sym, end=" ")
+        print()
+        print("Target:", end="\t")
+        for i in range(1, batch.trg.size(0)):
+            sym = TGT.vocab.itos[batch.trg.data[i, 0]]
+            if sym == "</s>": break
+            print(sym, end=" ")
+        print()
+        break
+
+
 
 # +++++++++++++++ END real training ++++++++++++++++++++
 if __name__ == '__main__':
@@ -665,8 +730,13 @@ if __name__ == '__main__':
     optparser.add_option("-l", "--limit", dest="limit", default=None, help="limit the number of training and evaluation samples")
     optparser.add_option("-o", "--model-output", dest="model_output", default=None, help="output file for the model, defaults to model-{random_number}")
     optparser.add_option("-b", "--basic", dest="basic", default=False, action='store_true', help="whether to use the auto-generated one-to-one integer training, this is just a sanity test")
+    optparser.add_option("-v", "--validate", dest="validate", default=None, help="run the model found in the file with dataset")
     (opts, _) = optparser.parse_args()
-    if opts.basic:
+    if opts.validate:
+        import os
+        os.path.isfile(opts.validate)
+        validate(opts.validate)
+    elif opts.basic:
         test_run()
     else:
         limit = opts.limit
@@ -674,8 +744,8 @@ if __name__ == '__main__':
             limit = int(limit)
         model_output_file = opts.model_output
         if model_output_file is None:
-            import time
-            model_output_file = "model-{}".format(str(time.time()))
-        train_multi_gpu(2, model_output_file, limit)
+            import datetime
+            model_output_file = "model-{}".format(str(datetime.date.today()))
+        train_multi_gpu(torch.cuda.device_count(), model_output_file, limit)
 
 
