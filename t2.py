@@ -6,6 +6,8 @@ import math, copy, time
 from torch.autograd import Variable
 from torchtext import data, datasets
 
+import io
+
 
 BATCH_SIZE = 12000
 # ++++++ BEGIN main functionalities ++++++++++
@@ -615,7 +617,7 @@ EOS_WORD = '</s>'
 BLANK_WORD = "<blank>"
 
 
-def load_data():
+def load_data(dimensions_only = False):
     import spacy
     spacy_de = spacy.load('de')
     spacy_en = spacy.load('en')
@@ -641,33 +643,38 @@ def load_data():
     return train, val, SRC, TGT  # todo  find out exactly what each of these variables are
 
 
-def train_multi_gpu(num_gpu, model_output_file, limit=None):
+def train_multi_gpu(num_gpu, output_model, in_model=None, data = load_data(), limit = None, ):
+
     device_ids = list(range(num_gpu))
     devices = [torch.device("cuda:{}".format(i)) for i in device_ids]
-    train, val, SRC, TGT = load_data()
+    BATCH_SIZE = 12000
+    train, val, SRC, TGT = data
     pad_idx = TGT.vocab.stoi[BLANK_WORD]
-    model = make_model(len(SRC.vocab), len(TGT.vocab), N=6)
-    model.cuda()
+    if in_model:
+        model = load_model(in_model, len(SRC.vocab), len(TGT.vocab))
+    else: 
+        model = make_model(len(SRC.vocab), len(TGT.vocab))
+        model.cuda()
     criterion = LabelSmoothing(size=len(TGT.vocab), padding_idx=pad_idx, smoothing=0.1)
     criterion.cuda()
-    #BATCH_SIZE = 12000
     train_iter = MyIterator(train, batch_size=BATCH_SIZE, device=devices[0],
                             repeat=False, sort_key=lambda x: (len(x.src), len(x.trg)),
                             batch_size_fn=batch_size_fn, train=True)
-    if limit is not None:
-        train_iter.set_limit(limit)
     valid_iter = MyIterator(val, batch_size=BATCH_SIZE, device=devices[0],
                             repeat=False, sort_key=lambda x: (len(x.src), len(x.trg)),
                             batch_size_fn=batch_size_fn, train=False)
+
     if limit is not None:
+        train_iter.set_limit(limit)
         valid_iter.set_limit(limit)
+
     model_par = nn.DataParallel(model, device_ids=device_ids)
     model_opt = NoamOpt(model.src_embed[0].d_model, 1, 2000,
                         torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
     import time
     t = time.time()
 
-    for epoch in range(1):
+    for epoch in range(3):
         model_par.train()
         run_epoch((rebatch(pad_idx, b) for b in train_iter),
                   model_par,
@@ -684,21 +691,25 @@ def train_multi_gpu(num_gpu, model_output_file, limit=None):
         c = time.time()
         print("time for eval: {}".format(t - c))
         print("loss: {}".format(loss))
-    torch.save(model,model_output_file)
-    torch.save(model_par.state_dict(), model_output_file+"_par")
+        torch.save(model.state_dict(), output_model)
+
+def load_model(model_file, src_len, tgt_len):
+    model = make_model(src_vocab= src_len, tgt_vocab=tgt_len, N=6)
+    with io.open(model_file, "rb") as file:
+        model.load_state_dict(torch.load(file))
+    model.cuda()
+    return model
+
 
 def validate(model_file, num_gpu = torch.cuda.device_count()):
     device_ids = list(range(num_gpu))
     devices = [torch.device("cuda:{}".format(i)) for i in device_ids]
 
     train, val, SRC, TGT = load_data()
-    model = make_model(len(SRC.vocab), len(TGT.vocab), N=6)
-    model = nn.DataParallel(model, device_ids=device_ids)
-    model.cuda()
-    import io
-    with io.open(model_file, "rb") as file:
-        model.load_state_dict(torch.load(file))
-    #BATCH_SIZE = 12000
+    print(len(SRC.vocab))
+
+    model = load_model(model_file, len(SRC.vocab), len(TGT.vocab))
+    model.eval()
     valid_iter = MyIterator(val, batch_size=BATCH_SIZE, device=devices[0],
                             repeat=False, sort_key=lambda x: (len(x.src), len(x.trg)),
                             batch_size_fn=batch_size_fn, train=False)
@@ -728,27 +739,25 @@ if __name__ == '__main__':
     import optparse
     optparser = optparse.OptionParser()
     # optparser.add_option("-d", "--datadir", dest="datadir", default="data", help="data directory (default=data)")
-    optparser.add_option("-l", "--limit", dest="limit", default=None, help="limit the number of training and evaluation samples")
+    optparser.add_option("-l", "--limit", type = "int", dest="limit", default=None, help="limit the number of training and evaluation samples")
     optparser.add_option("-o", "--model-output", dest="model_output", default=None, help="output file for the model, defaults to model-{random_number}")
     optparser.add_option("-s", "--batch-size", dest="batch_size", default=12000, help="batch size, default: 12000")
     optparser.add_option("-b", "--basic", dest="basic", default=False, action='store_true', help="whether to use the auto-generated one-to-one integer training, this is just a sanity test")
     optparser.add_option("-v", "--validate", dest="validate", default=None, help="run the model found in the file with dataset")
+    optparser.add_option("-i", "--inputmodel", dest="model_input", default=None, help="load model to input")
     (opts, _) = optparser.parse_args()
     BATCH_SIZE=int(opts.batch_size)
     if opts.validate:
-        import os
-        os.path.isfile(opts.validate)
         validate(opts.validate)
     elif opts.basic:
         test_run()
     else:
         limit = opts.limit
-        if limit is not None:
-            limit = int(limit)
         model_output_file = opts.model_output
+        model_input_file = opts.model_input
         if model_output_file is None:
             import datetime
             model_output_file = "model-{}".format(str(datetime.date.today()))
-        train_multi_gpu(torch.cuda.device_count(), model_output_file, limit)
+        train_multi_gpu(torch.cuda.device_count(), model_output_file, model_input_file, limit=limit)
 
 
