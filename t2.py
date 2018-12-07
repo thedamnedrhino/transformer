@@ -691,6 +691,7 @@ def train_multi_gpu(num_gpu, output_model, in_model=None, data = load_data(), li
         c = time.time()
         print("time for eval: {}".format(t - c))
         print("loss: {}".format(loss))
+    if output_model is not None:
         torch.save(model.state_dict(), output_model)
 
 def load_model(model_file, src_len, tgt_len):
@@ -740,7 +741,7 @@ if __name__ == '__main__':
     optparser = optparse.OptionParser()
     # optparser.add_option("-d", "--datadir", dest="datadir", default="data", help="data directory (default=data)")
     optparser.add_option("-l", "--limit", type = "int", dest="limit", default=None, help="limit the number of training and evaluation samples")
-    optparser.add_option("-o", "--model-output", dest="model_output", default=None, help="output file for the model, defaults to model-{random_number}")
+    optparser.add_option("-o", "--model-output", dest="model_output", default="model_out", help="output file for the model, defaults to model-{random_number}")
     optparser.add_option("-s", "--batch-size", dest="batch_size", default=12000, help="batch size, default: 12000")
     optparser.add_option("-b", "--basic", dest="basic", default=False, action='store_true', help="whether to use the auto-generated one-to-one integer training, this is just a sanity test")
     optparser.add_option("-v", "--validate", dest="validate", default=None, help="run the model found in the file with dataset")
@@ -758,6 +759,6 @@ if __name__ == '__main__':
         if model_output_file is None:
             import datetime
             model_output_file = "model-{}".format(str(datetime.date.today()))
-        train_multi_gpu(torch.cuda.device_count(), model_output_file, model_input_file, limit=limit)
+        train_multi_gpu(torch.cuda.device_count(), model_output_file, model_input_file, limit=int(limit) if limit is not None else limit)
 
 
