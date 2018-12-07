@@ -647,7 +647,6 @@ def train_multi_gpu(num_gpu, output_model, in_model=None, data = load_data(), li
 
     device_ids = list(range(num_gpu))
     devices = [torch.device("cuda:{}".format(i)) for i in device_ids]
-    BATCH_SIZE = 12000
     train, val, SRC, TGT = data
     pad_idx = TGT.vocab.stoi[BLANK_WORD]
     if in_model:
