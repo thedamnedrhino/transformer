@@ -640,16 +640,18 @@ def load_data():
     return train, val, SRC, TGT  # todo  find out exactly what each of these variables are
 
 
-def train_multi_gpu(num_gpu, model_output_file, limit=None):
+def train_multi_gpu(num_gpu, data = load_data(), model = None, limit = None, output_model = model_output_file):
+
     device_ids = list(range(num_gpu))
     devices = [torch.device("cuda:{}".format(i)) for i in device_ids]
-    train, val, SRC, TGT = load_data()
+    BATCH_SIZE = 12000
+    train, val, SRC, TGT = data
     pad_idx = TGT.vocab.stoi[BLANK_WORD]
-    model = make_model(len(SRC.vocab), len(TGT.vocab), N=6)
-    model.cuda()
+    if not model:
+        model = make_model(len(SRC.vocab), len(TGT.vocab), N=6)
+        model.cuda()
     criterion = LabelSmoothing(size=len(TGT.vocab), padding_idx=pad_idx, smoothing=0.1)
     criterion.cuda()
-    BATCH_SIZE = 12000
     train_iter = MyIterator(train, batch_size=BATCH_SIZE, device=devices[0],
                             repeat=False, sort_key=lambda x: (len(x.src), len(x.trg)),
                             batch_size_fn=batch_size_fn, train=True)
@@ -666,7 +668,7 @@ def train_multi_gpu(num_gpu, model_output_file, limit=None):
     import time
     t = time.time()
 
-    for epoch in range(1):
+    for epoch in range(3):
         model_par.train()
         run_epoch((rebatch(pad_idx, b) for b in train_iter),
                   model_par,
@@ -683,8 +685,8 @@ def train_multi_gpu(num_gpu, model_output_file, limit=None):
         c = time.time()
         print("time for eval: {}".format(t - c))
         print("loss: {}".format(loss))
-    torch.save(model,model_output_file)
-    torch.save(model_par.state_dict(), model_output_file+"_par")
+    torch.save(model.state_dict(),model_output_file)
+
 
 def validate(model_file, num_gpu = torch.cuda.device_count()):
     device_ids = list(range(num_gpu))
@@ -692,7 +694,6 @@ def validate(model_file, num_gpu = torch.cuda.device_count()):
 
     train, val, SRC, TGT = load_data()
     model = make_model(len(SRC.vocab), len(TGT.vocab), N=6)
-    model = nn.DataParallel(model, device_ids=device_ids)
     model.cuda()
     import io
     with io.open(model_file, "rb") as file:
@@ -733,8 +734,6 @@ if __name__ == '__main__':
     optparser.add_option("-v", "--validate", dest="validate", default=None, help="run the model found in the file with dataset")
     (opts, _) = optparser.parse_args()
     if opts.validate:
-        import os
-        os.path.isfile(opts.validate)
         validate(opts.validate)
     elif opts.basic:
         test_run()
@@ -746,6 +745,6 @@ if __name__ == '__main__':
         if model_output_file is None:
             import datetime
             model_output_file = "model-{}".format(str(datetime.date.today()))
-        train_multi_gpu(torch.cuda.device_count(), model_output_file, limit)
+            train_multi_gpu(torch.cuda.device_count(), limit=limit, output_model=model_output_file)
 
 
