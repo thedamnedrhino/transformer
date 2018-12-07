@@ -7,6 +7,7 @@ from torch.autograd import Variable
 from torchtext import data, datasets
 
 
+BATCH_SIZE = 12000
 # ++++++ BEGIN main functionalities ++++++++++
 def make_model(src_vocab, tgt_vocab, N=6,
                d_model=512, d_ff=2048, h=8, dropout=0.1):
@@ -649,7 +650,7 @@ def train_multi_gpu(num_gpu, model_output_file, limit=None):
     model.cuda()
     criterion = LabelSmoothing(size=len(TGT.vocab), padding_idx=pad_idx, smoothing=0.1)
     criterion.cuda()
-    BATCH_SIZE = 12000
+    #BATCH_SIZE = 12000
     train_iter = MyIterator(train, batch_size=BATCH_SIZE, device=devices[0],
                             repeat=False, sort_key=lambda x: (len(x.src), len(x.trg)),
                             batch_size_fn=batch_size_fn, train=True)
@@ -697,7 +698,7 @@ def validate(model_file, num_gpu = torch.cuda.device_count()):
     import io
     with io.open(model_file, "rb") as file:
         model.load_state_dict(torch.load(file))
-    BATCH_SIZE = 12000
+    #BATCH_SIZE = 12000
     valid_iter = MyIterator(val, batch_size=BATCH_SIZE, device=devices[0],
                             repeat=False, sort_key=lambda x: (len(x.src), len(x.trg)),
                             batch_size_fn=batch_size_fn, train=False)
@@ -729,9 +730,11 @@ if __name__ == '__main__':
     # optparser.add_option("-d", "--datadir", dest="datadir", default="data", help="data directory (default=data)")
     optparser.add_option("-l", "--limit", dest="limit", default=None, help="limit the number of training and evaluation samples")
     optparser.add_option("-o", "--model-output", dest="model_output", default=None, help="output file for the model, defaults to model-{random_number}")
+    optparser.add_option("-s", "--batch-size", dest="batch_size", default=12000, help="batch size, default: 12000")
     optparser.add_option("-b", "--basic", dest="basic", default=False, action='store_true', help="whether to use the auto-generated one-to-one integer training, this is just a sanity test")
     optparser.add_option("-v", "--validate", dest="validate", default=None, help="run the model found in the file with dataset")
     (opts, _) = optparser.parse_args()
+    BATCH_SIZE=int(opts.batch_size)
     if opts.validate:
         import os
         os.path.isfile(opts.validate)
