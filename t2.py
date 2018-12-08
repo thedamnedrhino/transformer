@@ -10,6 +10,7 @@ import io
 
 
 BATCH_SIZE = 12000
+TRAIN_EPOCHS = 10
 # ++++++ BEGIN main functionalities ++++++++++
 def make_model(src_vocab, tgt_vocab, N=6,
                d_model=512, d_ff=2048, h=8, dropout=0.1):
@@ -673,7 +674,7 @@ def train_multi_gpu(num_gpu, output_model, in_model=None, data = load_data(), li
     import time
     t = time.time()
 
-    for epoch in range(3):
+    for epoch in range(TRAIN_EPOCHS):
         model_par.train()
         run_epoch((rebatch(pad_idx, b) for b in train_iter),
                   model_par,
@@ -742,6 +743,7 @@ if __name__ == '__main__':
     optparser.add_option("-l", "--limit", type = "int", dest="limit", default=None, help="limit the number of training and evaluation samples")
     optparser.add_option("-o", "--model-output", dest="model_output", default="model_out", help="output file for the model, defaults to model-{random_number}")
     optparser.add_option("-s", "--batch-size", dest="batch_size", default=12000, help="batch size, default: 12000")
+    optparser.add_option("-e", "--epochs", dest="epochs", default=10, help="number of epochs for training")
     optparser.add_option("-b", "--basic", dest="basic", default=False, action='store_true', help="whether to use the auto-generated one-to-one integer training, this is just a sanity test")
     optparser.add_option("-v", "--validate", dest="validate", default=None, help="run the model found in the file with dataset")
     optparser.add_option("-i", "--inputmodel", dest="model_input", default=None, help="load model to input")
@@ -753,6 +755,7 @@ if __name__ == '__main__':
         test_run()
     else:
         limit = opts.limit
+        TRAIN_EPOCHS = int(opts.epochs)
         model_output_file = opts.model_output
         model_input_file = opts.model_input
         if model_output_file is None:
