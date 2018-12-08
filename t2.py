@@ -3,6 +3,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math, copy, time
+import warnings
+from nltk.translate.bleu_score import sentence_bleu
 from torch.autograd import Variable
 from torchtext import data, datasets
 
@@ -644,7 +646,7 @@ def load_data(dimensions_only = False):
     return train, val, SRC, TGT  # todo  find out exactly what each of these variables are
 
 
-def train_multi_gpu(num_gpu, output_model, in_model=None, data = load_data(), limit = None, ):
+def train_multi_gpu(num_gpu, output_model, in_model=None, data = load_data(), limit = None):
 
     device_ids = list(range(num_gpu))
     devices = [torch.device("cuda:{}".format(i)) for i in device_ids]
