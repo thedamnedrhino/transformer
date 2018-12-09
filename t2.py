@@ -837,6 +837,8 @@ def validate(model_file, num_gpu = torch.cuda.device_count()):
         out = greedy_decode(model, src, src_mask,
                             max_len=60, start_symbol=TGT.vocab.stoi["<s>"])
         print("Translation:", end="\t")
+        out_list = [TGT.vocab.itos[out[0 , out_i]] for out_i in range(1, out.size(1))]
+        tar_list = [TGT.vocab.itos[batch.trg.data[tar_i, 0]] for tar_i in range(1, batch.trg.size(0))]
         for i in range(1, out.size(1)):
             sym = TGT.vocab.itos[out[0, i]]
             if sym == "</s>": break
@@ -848,7 +850,10 @@ def validate(model_file, num_gpu = torch.cuda.device_count()):
             if sym == "</s>": break
             print(sym, end=" ")
         print()
-        break
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            print("score: ", sentence_bleu(out_list,tar_list))
+
 
 
 
