@@ -54,38 +54,44 @@ def subsequent_mask(size):
     subsequent_mask = np.triu(np.ones(attn_shape), k=1).astype('uint8')
     return torch.from_numpy(subsequent_mask) == 0
 
-def get_relative_scores(query, relative_weights): # this gets the second expression in the sum in equation (5) in the paper
+def get_relative_scores(query, relative_key): # this gets the second expression in the sum in equation (5) in the paper
     """
     :param query: n x d_k matrix
-    :param relative_weights: (2n+1) x d_k matrix. The nth column represents distance zero. Columns to the left represent negative distances, and to the right positive.
+    :param relative_key: (2n+1) x d_k matrix. The nth column represents distance zero. Columns to the left represent negative distances, and to the right positive.
     :return:
     """
-    assert 2*query.size(-2) + 1 == relative_weights.size(-2)
-    assert query.size(-1) == relative_weights.size(-1)
+    assert 2*query.size(-2) - 1 == relative_key.size(-2)
+    assert query.size(-1) == relative_key.size(-1)
+    all_scores = torch.matmul(query, relative_key.transpose(-2, -1))
+    relative_scores = get_proper_relative_submatrix(query.size(-2), all_scores) # we give query.size(-2) so it is double checked that the sizes match
+    return relative_scores
+
+def get_proper_relative_submatrix(n, relative_matrix):
     """
-    a n x (2n-1) matrix, we want to extract a n x n matrix. i.e: alpha_i,j
+    relative_matrix: n x (2n-1) matrix, we want to extract a n x n matrix. i.e: a_i,j
     """
-    all_scores = torch.matmul(query, relative_weights.transpose(-2, -1))
-    max_distance = relative_weights.size(-2)
+    assert relative_matrix.size(-2) == n
+    assert relative_matrix.size == 2*n -1
     indices = torch.tensor(n, n)
     for i in range(n):
         for j in range(n):
             indices[i][j] = n - i + j
     assert len(query.size()) == 3
     indices.unsqueeze(0).expand(query.size(0), indices.size(1), indices.size(2)) # replicate the matrix for all batches
-    relative_scores = all_scores.gather(all_scores, -1, indices)
-    return relative_scores
+    proper_relative_matrix = relative_matrix.gather(all_scores, -1, indices)
+    return proper_relative_matrix
 
-
-
-def relative_attention(query, key, value, relative_weights, mask=None, dropout=None):
+def relative_attention(query, key, value, relative_key, relative_value, mask=None, dropout=None):
     d_k = query.size(-1)
     base_scores = torch.matmul(query, key.transpose(-2, -1))
-    relative_scores = get_relative_scores(query, relative_weights)
-    scores = base_scores + get_relative_scores(query, relative_weights)
+    relative_scores = get_relative_scores(query, relative_key)
+    scores = base_scores + get_relative_scores(query, relative_key)
     if mask is not None:
         scores = scores.masked_fill(mask == 0, -1e9)
     p_attn = F.softmax(scores, dim=-1)
+    if dropout is not None:
+        p_attn = dropout(p_attn)
+    return torch.matmul(p_attn, value + get_proper_relative_submatrix(value.size(-2), relative_value)), p_attn
 
 def attention(query, key, value, mask=None, dropout=None):
     "Compute 'Scaled Dot Product Attention'"
