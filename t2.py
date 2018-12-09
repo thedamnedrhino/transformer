@@ -646,8 +646,9 @@ def load_data(dimensions_only = False):
     return train, val, SRC, TGT  # todo  find out exactly what each of these variables are
 
 
-def train_multi_gpu(num_gpu, output_model, in_model=None, data = load_data(), limit = None):
-
+def train_multi_gpu(num_gpu, output_model, in_model=None, data=None, limit = None, ):
+    if data is None:
+        data = load_data()
     device_ids = list(range(num_gpu))
     devices = [torch.device("cuda:{}".format(i)) for i in device_ids]
     train, val, SRC, TGT = data
@@ -693,8 +694,8 @@ def train_multi_gpu(num_gpu, output_model, in_model=None, data = load_data(), li
         c = time.time()
         print("time for eval: {}".format(t - c))
         print("loss: {}".format(loss))
-	if output_model is not None:
-	  torch.save(model.state_dict(), output_model)
+    if output_model is not None:
+        torch.save(model.state_dict(), output_model)
 
 def load_model(model_file, src_len, tgt_len):
     model = make_model(src_vocab= src_len, tgt_vocab=tgt_len, N=6)
@@ -769,10 +770,13 @@ if __name__ == '__main__':
     else:
         data = load_data()
     if opts.validate:
+        print('validate')
         validate(opts.validate, data=data)
     elif opts.basic:
+        print('basic')
         test_run()
     else:
+        print('not basic')
         limit = opts.limit
         TRAIN_EPOCHS = int(opts.epochs)
         model_output_file = opts.model_output
