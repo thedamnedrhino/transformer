@@ -62,36 +62,39 @@ def get_relative_scores(query, relative_key): # this gets the second expression 
     """
     assert 2*query.size(-2) - 1 == relative_key.size(-2)
     assert query.size(-1) == relative_key.size(-1)
+    assert len(query.size()) == 3
     all_scores = torch.matmul(query, relative_key.transpose(-2, -1))
-    relative_scores = get_proper_relative_submatrix(query.size(-2), all_scores) # we give query.size(-2) so it is double checked that the sizes match
+    relative_scores = get_proper_relative_submatrix(query.size(0), query.size(-2), all_scores) # we give query.size(-2) so it is double checked that the sizes match
     return relative_scores
 
-def get_proper_relative_submatrix(n, relative_matrix):
+def get_proper_relative_submatrix(nbatches, n, relative_matrix):
     """
     relative_matrix: n x (2n-1) matrix, we want to extract a n x n matrix. i.e: a_i,j
     """
-    assert relative_matrix.size(-2) == n
-    assert relative_matrix.size == 2*n -1
+    assert relative_matrix.size(-2) >= n # the matrix must cover the longest sentence
+    assert relative_matrix.size >= 2 * n - 1 # must cover distances 
     indices = torch.tensor(n, n)
     for i in range(n):
         for j in range(n):
             indices[i][j] = n - i + j
-    assert len(query.size()) == 3
-    indices.unsqueeze(0).expand(query.size(0), indices.size(1), indices.size(2)) # replicate the matrix for all batches
-    proper_relative_matrix = relative_matrix.gather(all_scores, -1, indices)
+    indices.unsqueeze(0).expand(nbatches, indices.size(1), indices.size(2)) # replicate the matrix for all batches
+    proper_relative_matrix = relative_matrix.gather(relative_matrix, -1, indices)
     return proper_relative_matrix
 
 def relative_attention(query, key, value, relative_key, relative_value, mask=None, dropout=None):
     d_k = query.size(-1)
+    nbatches = query.size(0)
     base_scores = torch.matmul(query, key.transpose(-2, -1))
     relative_scores = get_relative_scores(query, relative_key)
-    scores = base_scores + get_relative_scores(query, relative_key)
+    scores = base_scores + relative_scores
     if mask is not None:
         scores = scores.masked_fill(mask == 0, -1e9)
     p_attn = F.softmax(scores, dim=-1)
     if dropout is not None:
         p_attn = dropout(p_attn)
-    return torch.matmul(p_attn, value + get_proper_relative_submatrix(value.size(-2), relative_value)), p_attn
+    return torch.matmul(p_attn, value + get_proper_relative_submatrix(value.size(-1), value.size(-2),
+                                                                      relative_value.unsqueeze(0).expand(nbatches, relative_value.size(0), relative_value.size(1)))),\
+           p_attn
 
 def attention(query, key, value, mask=None, dropout=None):
     "Compute 'Scaled Dot Product Attention'"
@@ -240,6 +243,9 @@ class Generator(nn.Module):
     def forward(self, x):
         return F.log_softmax(self.proj(x), dim=-1)
 
+class RelativeAttention(nn.Module):
+    def __init__(self, max_sentence_size):
+        pass
 
 class MultiHeadedAttention(nn.Module):
     def __init__(self, h, d_model, dropout=0.1):
@@ -259,14 +265,22 @@ class MultiHeadedAttention(nn.Module):
             # Same mask applied to all h heads.
             mask = mask.unsqueeze(1)
         nbatches = query.size(0)
-
+        qs = query.size()
         # 1) Do all the linear projections in batch from d_model => h x d_k
         if relative:
             query, key, value = self.relative_attention(nbatches, query, key, value)
+
         else:
+            qvl = self.linears[0](query)
             query, key, value = \
                 [l(x).view(nbatches, -1, self.h, self.d_k).transpose(1, 2)
                  for l, x in zip(self.linears, (query, key, value))]
+            # we do view(nbatches, -1, self.h, self.d_k) and then transpose instead of straigh tview(nbatches, self.h, -1, self.d_k) because it would give us a different logical grouping
+            # Since we are packing the weights for all the heads into one matrix, we have to divide the product of the multiplication
+            # This way to get the proper elements for each head. Demonstrate this with an example in the doc.
+
+        print("batches: {}, h: {}, d_model: {}, d_k: {}".format(nbatches, self.h, self.d_k*self.h, self.d_k))
+        print("size of query: {}, size of linear: {}, size of view: {}".format(qs, qvl.size(), query.size()))
 
         # 2) Apply attention on all the projected vectors in batch.
         x, self.attn = attention(query, key, value, mask=mask,
