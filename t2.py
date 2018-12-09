@@ -54,47 +54,6 @@ def subsequent_mask(size):
     subsequent_mask = np.triu(np.ones(attn_shape), k=1).astype('uint8')
     return torch.from_numpy(subsequent_mask) == 0
 
-def get_relative_scores(query, relative_key): # this gets the second expression in the sum in equation (5) in the paper
-    """
-    :param query: n x d_k matrix
-    :param relative_key: (2n+1) x d_k matrix. The nth column represents distance zero. Columns to the left represent negative distances, and to the right positive.
-    :return:
-    """
-    assert 2*query.size(-2) - 1 == relative_key.size(-2)
-    assert query.size(-1) == relative_key.size(-1)
-    assert len(query.size()) == 3
-    all_scores = torch.matmul(query, relative_key.transpose(-2, -1))
-    relative_scores = get_proper_relative_submatrix(query.size(0), query.size(-2), all_scores) # we give query.size(-2) so it is double checked that the sizes match
-    return relative_scores
-
-def get_proper_relative_submatrix(nbatches, n, relative_matrix):
-    """
-    relative_matrix: n x (2n-1) matrix, we want to extract a n x n matrix. i.e: a_i,j
-    """
-    assert relative_matrix.size(-2) >= n # the matrix must cover the longest sentence
-    assert relative_matrix.size >= 2 * n - 1 # must cover distances 
-    indices = torch.tensor(n, n)
-    for i in range(n):
-        for j in range(n):
-            indices[i][j] = n - i + j
-    indices.unsqueeze(0).expand(nbatches, indices.size(1), indices.size(2)) # replicate the matrix for all batches
-    proper_relative_matrix = relative_matrix.gather(relative_matrix, -1, indices)
-    return proper_relative_matrix
-
-def relative_attention(query, key, value, relative_key, relative_value, mask=None, dropout=None):
-    d_k = query.size(-1)
-    nbatches = query.size(0)
-    base_scores = torch.matmul(query, key.transpose(-2, -1))
-    relative_scores = get_relative_scores(query, relative_key)
-    scores = base_scores + relative_scores
-    if mask is not None:
-        scores = scores.masked_fill(mask == 0, -1e9)
-    p_attn = F.softmax(scores, dim=-1)
-    if dropout is not None:
-        p_attn = dropout(p_attn)
-    return torch.matmul(p_attn, value + get_proper_relative_submatrix(value.size(-1), value.size(-2),
-                                                                      relative_value.unsqueeze(0).expand(nbatches, relative_value.size(0), relative_value.size(1)))),\
-           p_attn
 
 def attention(query, key, value, mask=None, dropout=None):
     "Compute 'Scaled Dot Product Attention'"
@@ -244,11 +203,95 @@ class Generator(nn.Module):
         return F.log_softmax(self.proj(x), dim=-1)
 
 class RelativeAttention(nn.Module):
-    def __init__(self, max_sentence_size):
-        pass
+    def __init__(self, d_q, h, k):
+        self.k = k # cutoff
+        self.h = h
+        self.d_q = d_q
+        # the following two parameters represent w_k and w_v in section 3.2 of the paper
+        self.w_k = nn.Parameter(torch.Tensor(2*k-1, d_q)) # one row for each i in [-k, k] where k is the relative cutoff
+        self.w_v = nn.Parameter(torch.Tensor(2*k-1, d_q)) # one row for each i in [-k, k] where k is the relative cutoff
+
+
+    def relative_attention(self, query, key, value, mask=None, dropout=None):
+        """
+        Main function. computes the attention vectors with relative position representations
+        The query, key and value arguments are the actual queries, keys and values \
+        e.g query = X x W_Q (corresponding to the first term in equation (2) of the paper
+        :param query:
+        :param key:
+        :param value:
+        :param mask:
+        :param dropout:
+        :return:
+        """
+        assert query.size(-1) == self.d_q
+        sentence_size = query.size(-2)
+        relative_key = self.fit_to_size(sentence_size, self.w_k)
+        relative_value = self.fit_to_size(sentence_size, self.w_v)
+        nbatches = query.size(0)
+        base_scores = torch.matmul(query, key.transpose(-2, -1))
+        relative_key_scores = self.get_relative_key_scores(query, relative_key)
+        scores = base_scores + relative_key_scores
+        if mask is not None:
+            scores = scores.masked_fill(mask == 0, -1e9)
+        p_attn = F.softmax(scores, dim=-1)
+        if dropout is not None:
+            p_attn = dropout(p_attn)
+
+        return torch.matmul(p_attn, value) + self.get_proper_relative_submatrix(nbatches, sentence_size,
+                                                                                torch.matmul(p_attn, relative_value)
+                                                                                ), p_attn
+
+    def get_relative_key_scores(self, query, relative_key): # this gets the second expression in the sum in equation (5) in the paper
+        """
+        :param query: n x d_k matrix
+        :param relative_key: (2n+1) x d_k matrix. The nth column represents distance zero. Columns to the left represent negative distances, and to the right positive.
+        :return:
+        """
+        sentence_size = query.size(-2)
+        d_q = query.size(-1)
+        assert 2*sentence_size - 1 == relative_key.size(-2)
+        assert d_q == relative_key.size(-1) # some double checks as usual
+        assert len(query.size()) == 3
+        all_scores = torch.matmul(query, relative_key.transpose(-2, -1))
+        relative_scores = self.get_proper_relative_submatrix(query.size(0), sentence_size, all_scores)
+        return relative_scores
+
+
+    def fit_to_size(self, sentence_size, relative_matrix):
+        padding_length = ((relative_matrix.size(-2) + 1) / 2 - sentence_size)
+        self.pad_on_0th_dimension(padding_length, relative_matrix) # replicate items for (i-j) > k (or < -k). k is the cutoff
+        fit = relative_matrix.repeat(1, self.h) # repeat the matrix for all heads
+        return fit
+
+
+    def pad_on_0th_dimension(self, pad_length, matrix):
+        return F.pad(matrix[None, None, ...], (0, 0, pad_length, pad_length), mode='replicate').squeeze()
+
+
+    def get_proper_relative_submatrix(self, nbatches, sentence_size, relative_matrix):
+        """
+        relative_matrix: n x (2n-1) matrix, we want to extract a n x n matrix. i.e: a_i,j
+        """
+        assert relative_matrix.size(-2) == sentence_size # the matrix must cover the longest sentence
+        assert relative_matrix.size(-1) == 2 * sentence_size - 1 # must cover distances
+        indices = torch.tensor(sentence_size, sentence_size)
+        for i in range(sentence_size):
+            for j in range(sentence_size):
+                indices[i][j] = sentence_size - i + j
+        if len(relative_matrix.size()) > len(indices.size()):
+            assert len(relative_matrix.size()) == len(indices.size()) + 1 # make sure we only have an extra batch dimension
+            indices.unsqueeze(0).expand(nbatches, indices.size(1), indices.size(2)) # replicate the matrix for all batches
+        else:
+            assert len(relative_matrix.size()) == len(indices.size()) # check that nothing sketchy is going on
+        proper_relative_matrix = relative_matrix.gather(relative_matrix, -1, indices)
+        return proper_relative_matrix
+
+    def forward(self, query, key, value, mask=None, dropout=None):
+        return self.relative_attention(query, key, value, mask, dropout)
 
 class MultiHeadedAttention(nn.Module):
-    def __init__(self, h, d_model, dropout=0.1):
+    def __init__(self, h, d_model, dropout=0.1, relative_attention=None):
         "Take in model size and number of heads."
         super(MultiHeadedAttention, self).__init__()
         assert d_model % h == 0
@@ -258,6 +301,7 @@ class MultiHeadedAttention(nn.Module):
         self.linears = clones(nn.Linear(d_model, d_model), 4)
         self.attn = None
         self.dropout = nn.Dropout(p=dropout)
+        self.relative_attention = relative_attention # type: RelativeAttention
 
     def forward(self, query, key, value, mask=None, relative=False):
         "Implements Figure 2"
@@ -267,24 +311,23 @@ class MultiHeadedAttention(nn.Module):
         nbatches = query.size(0)
         qs = query.size()
         # 1) Do all the linear projections in batch from d_model => h x d_k
-        if relative:
-            query, key, value = self.relative_attention(nbatches, query, key, value)
-
-        else:
-            qvl = self.linears[0](query)
-            query, key, value = \
-                [l(x).view(nbatches, -1, self.h, self.d_k).transpose(1, 2)
-                 for l, x in zip(self.linears, (query, key, value))]
-            # we do view(nbatches, -1, self.h, self.d_k) and then transpose instead of straigh tview(nbatches, self.h, -1, self.d_k) because it would give us a different logical grouping
-            # Since we are packing the weights for all the heads into one matrix, we have to divide the product of the multiplication
-            # This way to get the proper elements for each head. Demonstrate this with an example in the doc.
+        qvl = self.linears[0](query)
+        query, key, value = \
+            [l(x).view(nbatches, -1, self.h, self.d_k).transpose(1, 2)
+             for l, x in zip(self.linears, (query, key, value))]
+        # we do view(nbatches, -1, self.h, self.d_k) and then transpose instead of straigh tview(nbatches, self.h, -1, self.d_k) because it would give us a different logical grouping
+        # Since we are packing the weights for all the heads into one matrix, we have to divide the product of the multiplication
+        # This way to get the proper elements for each head. Demonstrate this with an example in the doc.
 
         print("batches: {}, h: {}, d_model: {}, d_k: {}".format(nbatches, self.h, self.d_k*self.h, self.d_k))
         print("size of query: {}, size of linear: {}, size of view: {}".format(qs, qvl.size(), query.size()))
 
         # 2) Apply attention on all the projected vectors in batch.
-        x, self.attn = attention(query, key, value, mask=mask,
-                                     dropout=self.dropout)
+        if not relative:
+            x, self.attn = attention(query, key, value, mask=mask,
+                                         dropout=self.dropout)
+        else:
+            x, self.attn = self.relative_attention(query, key, value, mask=mask, dropout=self.dropout)
 
         # 3) "Concat" using a view and apply a final linear.
         x = x.transpose(1, 2).contiguous() \
