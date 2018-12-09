@@ -15,10 +15,13 @@ BATCH_SIZE = 12000
 TRAIN_EPOCHS = 10
 # ++++++ BEGIN main functionalities ++++++++++
 def make_model(src_vocab, tgt_vocab, N=6,
-               d_model=512, d_ff=2048, h=8, dropout=0.1):
+               d_model=512, d_ff=2048, h=8, dropout=0.1, relative=False, relative_cutoff=3):
     "Helper: Construct a model from hyperparameters."
     c = copy.deepcopy
-    attn = MultiHeadedAttention(h, d_model)
+    relatt=None
+    if relative:
+        relatt = RelativeAttention(d_model // h, h, relative_cutoff)
+    attn = MultiHeadedAttention(h, d_model, relative_attention=relatt)
     ff = PositionwiseFeedForward(d_model, d_ff, dropout)
     position = PositionalEncoding(d_model, dropout)
     model = EncoderDecoder(
@@ -203,8 +206,8 @@ class Generator(nn.Module):
         return F.log_softmax(self.proj(x), dim=-1)
 
 class RelativeAttention(nn.Module):
-    def __init__(self, d_q, h, k):
-        self.k = k # cutoff
+    def __init__(self, d_q, h, cutoff):
+        self.k = cutoff # cutoff
         self.h = h
         self.d_q = d_q
         # the following two parameters represent w_k and w_v in section 3.2 of the paper
@@ -303,8 +306,9 @@ class MultiHeadedAttention(nn.Module):
         self.dropout = nn.Dropout(p=dropout)
         self.relative_attention = relative_attention # type: RelativeAttention
 
-    def forward(self, query, key, value, mask=None, relative=False):
+    def forward(self, query, key, value, mask=None):
         "Implements Figure 2"
+        relative = self.relative_attention is not None
         if mask is not None:
             # Same mask applied to all h heads.
             mask = mask.unsqueeze(1)
@@ -319,8 +323,8 @@ class MultiHeadedAttention(nn.Module):
         # Since we are packing the weights for all the heads into one matrix, we have to divide the product of the multiplication
         # This way to get the proper elements for each head. Demonstrate this with an example in the doc.
 
-        print("batches: {}, h: {}, d_model: {}, d_k: {}".format(nbatches, self.h, self.d_k*self.h, self.d_k))
-        print("size of query: {}, size of linear: {}, size of view: {}".format(qs, qvl.size(), query.size()))
+        #print("batches: {}, h: {}, d_model: {}, d_k: {}".format(nbatches, self.h, self.d_k*self.h, self.d_k))
+        #print("size of query: {}, size of linear: {}, size of view: {}".format(qs, qvl.size(), query.size()))
 
         # 2) Apply attention on all the projected vectors in batch.
         if not relative:
@@ -409,6 +413,14 @@ class Batch:
 
 
 def run_epoch(data_iter, model, loss_compute):
+    """
+
+    :param data_iter:
+    :param model:
+    :type model: MultiHeadedAttention
+    :param loss_compute:
+    :return:
+    """
     "Standard Training and Logging Function"
     start = time.time()
     total_tokens = 0
@@ -559,10 +571,10 @@ def greedy_decode(model, src, src_mask, max_len, start_symbol):
     return ys
 
 
-def test_run():
+def test_run(relative=False):
     V = 11
     criterion = LabelSmoothing(size=V, padding_idx=0, smoothing=0.0)
-    model = make_model(V, V, N=2)
+    model = make_model(V, V, N=2, relative=relative)
     model_opt = NoamOpt(model.src_embed[0].d_model, 1, 400,
                         torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
     times = []
@@ -846,16 +858,17 @@ if __name__ == '__main__':
     optparser.add_option("-s", "--batch-size", dest="batch_size", default=12000, help="batch size, default: 12000")
     optparser.add_option("-e", "--epochs", dest="epochs", default=10, help="number of epochs for training")
     optparser.add_option("-b", "--basic", dest="basic", default=False, action='store_true', help="whether to use the auto-generated one-to-one integer training, this is just a sanity test")
+    optparser.add_option("-r", "--relative", dest="relative", default=False, action='store_true', help="enable relative positions")
     optparser.add_option("-v", "--validate", dest="validate", default=None, help="run the model found in the file with dataset")
     optparser.add_option("-i", "--inputmodel", dest="model_input", default=None, help="load model to input")
     (opts, _) = optparser.parse_args()
     BATCH_SIZE=int(opts.batch_size)
     if opts.validate:
         print('validate')
-        validate(opts.validate)
+        validate(opts.validate, relative=opts.relative)
     elif opts.basic:
         print('basic')
-        test_run()
+        test_run(relative=opts.relative)
     else:
         print('not basic')
         limit = opts.limit
@@ -865,6 +878,6 @@ if __name__ == '__main__':
         if model_output_file is None:
             import datetime
             model_output_file = "model-{}".format(str(datetime.date.today()))
-        train_multi_gpu(torch.cuda.device_count(), model_output_file, model_input_file, limit=int(limit) if limit is not None else limit)
+        train_multi_gpu(torch.cuda.device_count(), model_output_file, model_input_file, limit=int(limit) if limit is not None else limit, relative=opts.relative)
 
 
