@@ -285,6 +285,7 @@ class RelativeAttention(nn.Module):
         for i in range(sentence_size):
             for j in range(sentence_size):
                 indices[i][j] = sentence_size - i + j
+        indices = indices.repeat(self.h, sentence_size, sentence_size) # repeat for all heads
         if len(relative_matrix.size()) > len(indices.size()):
             assert len(relative_matrix.size()) == len(indices.size()) + 1 # make sure we only have an extra batch dimension
             indices.unsqueeze(0).expand(nbatches, indices.size(1), indices.size(2)) # replicate the matrix for all batches
@@ -868,7 +869,7 @@ if __name__ == '__main__':
     BATCH_SIZE=int(opts.batch_size)
     if opts.validate:
         print('validate')
-        validate(opts.validate, relative=opts.relative)
+        validate(opts.validate)
     elif opts.basic:
         print('basic')
         test_run(relative=opts.relative)
