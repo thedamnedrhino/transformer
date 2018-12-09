@@ -207,12 +207,13 @@ class Generator(nn.Module):
 
 class RelativeAttention(nn.Module):
     def __init__(self, d_q, h, cutoff):
+        super(RelativeAttention, self).__init__()
         self.k = cutoff # cutoff
         self.h = h
         self.d_q = d_q
         # the following two parameters represent w_k and w_v in section 3.2 of the paper
-        self.w_k = nn.Parameter(torch.Tensor(2*k-1, d_q)) # one row for each i in [-k, k] where k is the relative cutoff
-        self.w_v = nn.Parameter(torch.Tensor(2*k-1, d_q)) # one row for each i in [-k, k] where k is the relative cutoff
+        self.w_k = nn.Parameter(torch.Tensor(2*cutoff-1, d_q)) # one row for each i in [-k, k] where k is the relative cutoff
+        self.w_v = nn.Parameter(torch.Tensor(2*cutoff-1, d_q)) # one row for each i in [-k, k] where k is the relative cutoff
 
 
     def relative_attention(self, query, key, value, mask=None, dropout=None):
@@ -255,20 +256,22 @@ class RelativeAttention(nn.Module):
         d_q = query.size(-1)
         assert 2*sentence_size - 1 == relative_key.size(-2)
         assert d_q == relative_key.size(-1) # some double checks as usual
-        assert len(query.size()) == 3
+        assert len(query.size()) == 4
         all_scores = torch.matmul(query, relative_key.transpose(-2, -1))
         relative_scores = self.get_proper_relative_submatrix(query.size(0), sentence_size, all_scores)
         return relative_scores
 
 
     def fit_to_size(self, sentence_size, relative_matrix):
-        padding_length = ((relative_matrix.size(-2) + 1) / 2 - sentence_size)
-        self.pad_on_0th_dimension(padding_length, relative_matrix) # replicate items for (i-j) > k (or < -k). k is the cutoff
-        fit = relative_matrix.repeat(1, self.h) # repeat the matrix for all heads
+        padding_length = abs(((relative_matrix.size(-2) + 1) // 2 - sentence_size))
+        relative_matrix = self.pad_on_0th_dimension(padding_length, relative_matrix) # replicate items for (i-j) > k (or < -k). k is the cutoff
+        fit = relative_matrix.repeat(self.h, 1, 1) # repeat the matrix for all heads
+        assert len(relative_matrix.size()) == len(fit.size())-1 # make sure we got we wanted from the head replication
         return fit
 
 
     def pad_on_0th_dimension(self, pad_length, matrix):
+        print(pad_length)
         return F.pad(matrix[None, None, ...], (0, 0, pad_length, pad_length), mode='replicate').squeeze()
 
 
@@ -278,7 +281,7 @@ class RelativeAttention(nn.Module):
         """
         assert relative_matrix.size(-2) == sentence_size # the matrix must cover the longest sentence
         assert relative_matrix.size(-1) == 2 * sentence_size - 1 # must cover distances
-        indices = torch.tensor(sentence_size, sentence_size)
+        indices = torch.zeros([sentence_size, sentence_size])
         for i in range(sentence_size):
             for j in range(sentence_size):
                 indices[i][j] = sentence_size - i + j
