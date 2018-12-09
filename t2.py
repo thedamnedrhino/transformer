@@ -716,31 +716,35 @@ def validate(model_file, num_gpu = torch.cuda.device_count()):
     valid_iter = MyIterator(val, batch_size=BATCH_SIZE, device=devices[0],
                             repeat=False, sort_key=lambda x: (len(x.src), len(x.trg)),
                             batch_size_fn=batch_size_fn, train=False)
+    scores = []
     for i, batch in enumerate(valid_iter):
         src = batch.src.transpose(0, 1)[:1]
         src_mask = (src != SRC.vocab.stoi["<blank>"]).unsqueeze(-2)
         out = greedy_decode(model, src, src_mask,
                             max_len=60, start_symbol=TGT.vocab.stoi["<s>"])
         print("Translation:", end="\t")
-        out_list = [TGT.vocab.itos[out[0 , out_i]] for out_i in range(1, out.size(1))]
-        tar_list = [TGT.vocab.itos[batch.trg.data[tar_i, 0]] for tar_i in range(1, batch.trg.size(0))]
+        out_list = []
+        tar_list = []
         for i in range(1, out.size(1)):
             sym = TGT.vocab.itos[out[0, i]]
             if sym == "</s>": break
-            print(sym, end=" ")
+            out_list.append(sym)
+
+        print(' '.join(out_list))
         print()
         print("Target:", end="\t")
         for i in range(1, batch.trg.size(0)):
             sym = TGT.vocab.itos[batch.trg.data[i, 0]]
             if sym == "</s>": break
-            print(sym, end=" ")
+            tar_list.append(sym)
+        print(' '.join(tar_list))
         print()
+        score = sentence_bleu([out_list],tar_list)
+        scores.append(score)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            print("score: ", sentence_bleu(out_list,tar_list))
-
-
-
+            print("score: ", score)
+    print("average score: {}".format(sum(scores)/float(len(scores))))
 
 # +++++++++++++++ END real training ++++++++++++++++++++
 if __name__ == '__main__':
@@ -754,10 +758,18 @@ if __name__ == '__main__':
     optparser.add_option("-b", "--basic", dest="basic", default=False, action='store_true', help="whether to use the auto-generated one-to-one integer training, this is just a sanity test")
     optparser.add_option("-v", "--validate", dest="validate", default=None, help="run the model found in the file with dataset")
     optparser.add_option("-i", "--inputmodel", dest="model_input", default=None, help="load model to input")
+    optparser.add_option("-d", "--data-dir", dest="data_dir", default=None, help="Data directory to load dataset from")
+    optparser.add_option("-1", "--lang1", dest="lang1", default=None, help="Input language extention name")
+    optparser.add_option("-2", "--lang2", dest="lang2", default=None, help="Input language extention name")
     (opts, _) = optparser.parse_args()
     BATCH_SIZE=int(opts.batch_size)
+    if opts.data_dir:
+        print("loading data from {}".format(opts.data_dir))
+        data = load_data(lang1=opts.lang1, lang2=opts.lang2, directory=opts.data_dir)
+    else:
+        data = load_data()
     if opts.validate:
-        validate(opts.validate)
+        validate(opts.validate, data=data)
     elif opts.basic:
         test_run()
     else:
@@ -768,6 +780,9 @@ if __name__ == '__main__':
         if model_output_file is None:
             import datetime
             model_output_file = "model-{}".format(str(datetime.date.today()))
-        train_multi_gpu(torch.cuda.device_count(), model_output_file, model_input_file, limit=int(limit) if limit is not None else limit)
+        train_multi_gpu(torch.cuda.device_count(),
+                        model_output_file, model_input_file,
+                        data=data,
+                        limit=int(limit) if limit is not None else limit)
 
 
