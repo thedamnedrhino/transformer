@@ -54,6 +54,38 @@ def subsequent_mask(size):
     subsequent_mask = np.triu(np.ones(attn_shape), k=1).astype('uint8')
     return torch.from_numpy(subsequent_mask) == 0
 
+def get_relative_scores(query, relative_weights): # this gets the second expression in the sum in equation (5) in the paper
+    """
+    :param query: n x d_k matrix
+    :param relative_weights: (2n+1) x d_k matrix. The nth column represents distance zero. Columns to the left represent negative distances, and to the right positive.
+    :return:
+    """
+    assert 2*query.size(-2) + 1 == relative_weights.size(-2)
+    assert query.size(-1) == relative_weights.size(-1)
+    """
+    a n x (2n-1) matrix, we want to extract a n x n matrix. i.e: alpha_i,j
+    """
+    all_scores = torch.matmul(query, relative_weights.transpose(-2, -1))
+    max_distance = relative_weights.size(-2)
+    indices = torch.tensor(n, n)
+    for i in range(n):
+        for j in range(n):
+            indices[i][j] = n - i + j
+    assert len(query.size()) == 3
+    indices.unsqueeze(0).expand(query.size(0), indices.size(1), indices.size(2)) # replicate the matrix for all batches
+    relative_scores = all_scores.gather(all_scores, -1, indices)
+    return relative_scores
+
+
+
+def relative_attention(query, key, value, relative_weights, mask=None, dropout=None):
+    d_k = query.size(-1)
+    base_scores = torch.matmul(query, key.transpose(-2, -1))
+    relative_scores = get_relative_scores(query, relative_weights)
+    scores = base_scores + get_relative_scores(query, relative_weights)
+    if mask is not None:
+        scores = scores.masked_fill(mask == 0, -1e9)
+    p_attn = F.softmax(scores, dim=-1)
 
 def attention(query, key, value, mask=None, dropout=None):
     "Compute 'Scaled Dot Product Attention'"
@@ -215,7 +247,7 @@ class MultiHeadedAttention(nn.Module):
         self.attn = None
         self.dropout = nn.Dropout(p=dropout)
 
-    def forward(self, query, key, value, mask=None):
+    def forward(self, query, key, value, mask=None, relative=False):
         "Implements Figure 2"
         if mask is not None:
             # Same mask applied to all h heads.
@@ -223,13 +255,16 @@ class MultiHeadedAttention(nn.Module):
         nbatches = query.size(0)
 
         # 1) Do all the linear projections in batch from d_model => h x d_k
-        query, key, value = \
-            [l(x).view(nbatches, -1, self.h, self.d_k).transpose(1, 2)
-             for l, x in zip(self.linears, (query, key, value))]
+        if relative:
+            query, key, value = self.relative_attention(nbatches, query, key, value)
+        else:
+            query, key, value = \
+                [l(x).view(nbatches, -1, self.h, self.d_k).transpose(1, 2)
+                 for l, x in zip(self.linears, (query, key, value))]
 
         # 2) Apply attention on all the projected vectors in batch.
         x, self.attn = attention(query, key, value, mask=mask,
-                                 dropout=self.dropout)
+                                     dropout=self.dropout)
 
         # 3) "Concat" using a view and apply a final linear.
         x = x.transpose(1, 2).contiguous() \
