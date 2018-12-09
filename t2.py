@@ -694,8 +694,8 @@ def train_multi_gpu(num_gpu, output_model, in_model=None, data=None, limit = Non
         c = time.time()
         print("time for eval: {}".format(t - c))
         print("loss: {}".format(loss))
-	if output_model is not None:
-	  torch.save(model.state_dict(), output_model)
+    if output_model is not None:
+        torch.save(model.state_dict(), output_model)
 
 def load_model(model_file, src_len, tgt_len):
     model = make_model(src_vocab= src_len, tgt_vocab=tgt_len, N=6)
