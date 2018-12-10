@@ -94,7 +94,6 @@ class EncoderDecoder(nn.Module):
 
     def forward(self, src, tgt, src_mask, tgt_mask):
         "Take in and process masked src and target sequences."
-        #s([src, tgt])
         return self.decode(self.encode(src, src_mask), src_mask,
                            tgt, tgt_mask)
 
@@ -273,7 +272,6 @@ class RelativeAttention(nn.Module):
         all_scores = torch.matmul(query, relative_key.transpose(-2, -1))
         # relative_scores = self.get_proper_relative_submatrix(query.size(0), q_sentence_size, all_scores) Had to change the sentence size argument, since query and key don't necessarilly have the same one
         relative_scores = self.get_proper_relative_submatrix(query.size(0), q_sentence_size, k_sentence_size, (all_scores.size(-1)+1)/2, all_scores)
-        s([all_scores, relative_scores])
         return relative_scores
 
 
@@ -284,7 +282,8 @@ class RelativeAttention(nn.Module):
             relative_matrix = self.pad_on_0th_dimension(padding_length, relative_matrix) # replicate items for (i-j) > k (or < -k). k is the cutoff
         else:
             relative_matrix = self.trim_on_0th_dimension(-padding_length, relative_matrix, cutoff)
-        fit = relative_matrix.repeat(self.h, 1, 1) # repeat the matrix for all heads
+        #fit = relative_matrix.repeat(self.h, 1, 1) # repeat the matrix for all head \\ replaced with more efficient expand below
+        fit = relative_matrix.unsqueeze(0).expand(self.h, -1, -1)
         assert len(relative_matrix.size()) == len(fit.size())-1 # make sure we got we wanted from the head replication
         return fit
     
@@ -306,7 +305,7 @@ class RelativeAttention(nn.Module):
         indices = torch.Tensor(coefficient_matrix.size(2), 2*n-1).long()
         for i in range(int(indices.size(0))):
             for j in range(int(indices.size(1))):
-                corresponding_index = i + j - (n) 
+                corresponding_index = i + j - (n - 1) 
                 if corresponding_index >= 0 and corresponding_index < n:
                     indices[i][j] = corresponding_index
                 else:
@@ -322,34 +321,31 @@ class RelativeAttention(nn.Module):
 
     def pad_on_0th_dimension(self, pad_length, matrix):
         # pad the number the relative position matrix to cover all positions in the given sentence
-        #print(pad_length)
         return F.pad(matrix[None, None, ...], (0, 0, pad_length, pad_length), mode='replicate').squeeze()
 
     def trim_on_0th_dimension(self, trim_length, matrix, cutoff):
         # trim the relative position matrix to the corresponding sentence length as the cutoff is greater than the sentence length
         # dimension of matrix is 2*cutoff - 1 x _
         indices = torch.tensor([n for n in range(trim_length, matrix.size(-2) - trim_length)])
-        print(indices)
-        s([matrix])
         return matrix.index_select(-2, indices)
 
     def get_proper_relative_submatrix(self, nbatches, q_sentence_size, k_sentence_size, max_sentence_size, relative_matrix):
         """
         relative_matrix: n_q x (2max_sentence_size - 1) matrix, we want to extract a n_q x n_k matrixx. i.e: a_i,j. this corresponds to extracting X_i x W_Q x a_ij from X_i x W_q x w_[-k:k] in equation (5)
+        n_q and n_k are the sentence sizes (number of rows) of the query and key matrices respectively
         """
-        # assert relative_matrix.size(-2) == sentence_size, "{}, {}".format(relative_matrix.size(), (nbatches, sentence_size))# the matrix must cover the longest sentence
         sentence_size = max_sentence_size
         assert relative_matrix.size(-1) == 2 * sentence_size - 1 # must cover distances
-        assert relative_matrix.size(-2) == q_sentence_size
+        assert relative_matrix.size(-2) == q_sentence_size # this should ne the result of a multiplication with the left operand being the query variable, hence the same number of rows (sentence size of the query)
         sentence_size = int(sentence_size)
         indices = torch.zeros([q_sentence_size, sentence_size], dtype=torch.long)
         for i in range(q_sentence_size):
             for j in range(k_sentence_size):
-                indices[i][j] = (sentence_size-1) - i + j # index sentence_size - 1 represents a distance of zero
-        indices = indices.repeat(self.h, 1, 1) # repeat for all heads
+                indices[i][j] = (sentence_size - 1) - i + j # index sentence_size - 1 represents a distance of zero
+        indices = indices.unsqueeze(0).expand(self.h, -1, -1) # repeat for all heads
         if len(relative_matrix.size()) > len(indices.size()):
             assert len(relative_matrix.size()) == len(indices.size()) + 1 # make sure we only have an extra batch dimension
-            indices = indices.repeat(relative_matrix.size(0), 1, 1, 1)
+            indices = indices.unsqueeze(0).expand(relative_matrix.size(0), -1, -1, -1)
         else:
             assert len(relative_matrix.size()) == len(indices.size()) # check that nothing sketchy is going on
         #print(indices.size())
@@ -647,9 +643,9 @@ def test_run(relative=False):
     times = []
     all_tps = []  # array of tokens per sec
     losses = []
-    for epoch in range(1):
+    for epoch in range(8):
         model.train()
-        loss, t, tokens_per_sec = run_epoch(data_gen(V, 20, 10), model,
+        loss, t, tokens_per_sec = run_epoch(data_gen(V, 30, 10), model,
                                             SimpleLossCompute(model.generator, criterion, model_opt))
         times.append(t)
         all_tps.append(tokens_per_sec)
@@ -821,7 +817,7 @@ def load_data(dimensions_only = False):
     return train, val, SRC, TGT  # todo  find out exactly what each of these variables are
 
 
-def train_multi_gpu(num_gpu, output_model, in_model=None, data=None, limit = None, ):
+def train_multi_gpu(num_gpu, output_model, in_model=None, data=None, limit = None, relative=False):
     if data is None:
         data = load_data()
     device_ids = list(range(num_gpu))
@@ -831,7 +827,7 @@ def train_multi_gpu(num_gpu, output_model, in_model=None, data=None, limit = Non
     if in_model:
         model = load_model(in_model, len(SRC.vocab), len(TGT.vocab))
     else: 
-        model = make_model(len(SRC.vocab), len(TGT.vocab))
+        model = make_model(len(SRC.vocab), len(TGT.vocab), relative=relative)
         model.cuda()
     criterion = LabelSmoothing(size=len(TGT.vocab), padding_idx=pad_idx, smoothing=0.1)
     criterion.cuda()
