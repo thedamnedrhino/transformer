@@ -234,25 +234,27 @@ class RelativeAttention(nn.Module):
         """
         assert query.size(-1) == self.d_q
         q_sentence_size, k_sentence_size, v_sentence_size = (query.size(-2), key.size(-2), value.size(-2))
+        assert k_sentence_size == v_sentence_size
         max_s_size = max(q_sentence_size, k_sentence_size, v_sentence_size)
 
         relative_key = self.fit_to_size(max_s_size, self.w_k)
-        relative_value = self.fit_to_size(max_s_size, self.w_v) # we pad w_v to k_sentence_size to. see notes on expand_to_size() for why
+        relative_value = self.fit_to_size(k_sentence_size, self.w_v) # we pad w_v to k_sentence_size to. see notes on expand_to_size() for why
 
         nbatches = query.size(0)
         base_scores = torch.matmul(query, key.transpose(-2, -1))
         relative_key_scores = self.get_relative_key_scores(query, relative_key, k_sentence_size)
-
         scores = base_scores + relative_key_scores
-
+        
         if mask is not None:
             scores = scores.masked_fill(mask == 0, -1e9)
 
+        # this is alpha_i,j the size is n_q*n_k
         p_attn = F.softmax(scores, dim=-1)
         if dropout is not None:
             p_attn = dropout(p_attn)
 
         relative_value_scores = torch.matmul(self.expand_to_size(k_sentence_size, p_attn, query, key, value), relative_value)
+
         return torch.matmul(p_attn, value) + relative_value_scores, p_attn
 
     def get_relative_key_scores(self, query, relative_key, k_sentence_size): # this gets the second expression in the sum in equation (5) in the paper
@@ -340,7 +342,7 @@ class RelativeAttention(nn.Module):
         assert relative_matrix.size(-1) == 2 * sentence_size - 1 # must cover distances
         assert relative_matrix.size(-2) == q_sentence_size # this should ne the result of a multiplication with the left operand being the query variable, hence the same number of rows (sentence size of the query)
         sentence_size = int(sentence_size)
-        indices = torch.zeros([q_sentence_size, sentence_size], dtype=torch.long, device=relative_matrix.device)
+        indices = torch.zeros([q_sentence_size, k_sentence_size], dtype=torch.long, device=relative_matrix.device)
         for i in range(q_sentence_size):
             for j in range(k_sentence_size):
                 indices[i][j] = (sentence_size - 1) - i + j # index sentence_size - 1 represents a distance of zero
@@ -648,7 +650,7 @@ def test_run(relative=False):
     times = []
     all_tps = []  # array of tokens per sec
     losses = []
-    for epoch in range(8):
+    for epoch in range(TRAIN_EPOCHS):
         model.train()
         loss, t, tokens_per_sec = run_epoch(data_gen(V, 30, 10), model,
                                             SimpleLossCompute(model.generator, criterion, model_opt))
@@ -970,6 +972,7 @@ if __name__ == '__main__':
     optparser.add_option("-i", "--inputmodel", dest="model_input", default=None, help="load model to input")
     (opts, _) = optparser.parse_args()
     BATCH_SIZE=int(opts.batch_size)
+    TRAIN_EPOCHS = int(opts.epochs)
     if opts.validate:
         print('validate')
         validate(opts.validate)
@@ -982,7 +985,6 @@ if __name__ == '__main__':
     else:
         print('not basic')
         limit = opts.limit
-        TRAIN_EPOCHS = int(opts.epochs)
         model_output_file = opts.model_output
         model_input_file = opts.model_input
         if model_output_file is None:
