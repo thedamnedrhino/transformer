@@ -235,9 +235,9 @@ class RelativeAttention(nn.Module):
         """
         assert query.size(-1) == self.d_q
         k_sentence_size = key.size(-2)
-        v_sentence_size = value.size(-2)
+        # v_sentence_size = value.size(-2)
         relative_key = self.fit_to_size(k_sentence_size, self.w_k)
-        relative_value = self.fit_to_size(v_sentence_size, self.w_v)
+        relative_value = self.fit_to_size(k_sentence_size, self.w_v) # we pad w_v to k_sentence_size to. see notes on expand_to_size() for why
         #print('{}; {}; {}'.format(sentence_size, relative_key.size(), relative_value.size()))
         nbatches = query.size(0)
         base_scores = torch.matmul(query, key.transpose(-2, -1))
@@ -253,7 +253,7 @@ class RelativeAttention(nn.Module):
 
         #print(p_attn.size())
         #print(relative_value.size())
-        relative_value_scores = torch.matmul(self.expand_to_size(v_sentence_size, p_attn), relative_value)
+        relative_value_scores = torch.matmul(self.expand_to_size(k_sentence_size, p_attn), relative_value)
         #print(relative_value_scores.size())
         return torch.matmul(p_attn, value) + relative_value_scores, p_attn
 
@@ -288,20 +288,20 @@ class RelativeAttention(nn.Module):
     
     def expand_to_size(self, n, coefficient_matrix):
         """
-        expand the jxk coefficient matrix to a nx(2n-1) one 
+        expand the jxn coefficient matrix to a jx(2n-1) one 
         by padding each row i with n-i-1 zeros before and i zeros after
         """
         # none of the below assertions can be made. The coefficient matrix n_q x n_k where n_q and n_k are the sentence lengths of query and key. n is the sentence size of the value
         # assert coefficient_matrix.size(-2) == coefficient_matrix.size(-1), '{}'.format(coefficient_matrix.size()) 
         # assert coefficient_matrix.size(-2) == n
-        # assert coefficient_matrix.size(-1) == n
-        zero_pad = torch.zeros(coefficient_matrix.size(0), coefficient_matrix.size(1), n, n-1, requires_grad=False)
+        assert coefficient_matrix.size(-1) == n
+        zero_pad = torch.zeros(coefficient_matrix.size(0), coefficient_matrix.size(1), coefficient_matrix.size(2), n-1, requires_grad=False)
         zero_cat = torch.cat((coefficient_matrix, zero_pad), -1)
-        print(coefficient_matrix.size())
-        print(zero_cat.size())
-        indices = torch.Tensor(n, 2*n-1).long()
-        for i in range(n):
-            for j in range(2*n-1):
+        #print(coefficient_matrix.size())
+        #print(zero_cat.size())
+        indices = torch.Tensor(coefficient_matrix.size(2), 2*n-1).long()
+        for i in range(int(indices.size(0))):
+            for j in range(int(indices.size(1))):
                 corresponding_index = i + j - (n - 1) # the index of the column in the nxn column corresponding to the jth column of the ith row in the nx(2n-1) matrix
                 if corresponding_index >= 0 and corresponding_index < n:
                     indices[i][j] = corresponding_index
@@ -317,7 +317,7 @@ class RelativeAttention(nn.Module):
                     
 
     def pad_on_0th_dimension(self, pad_length, matrix):
-        print(pad_length)
+        #print(pad_length)
         return F.pad(matrix[None, None, ...], (0, 0, pad_length, pad_length), mode='replicate').squeeze()
 
 
@@ -339,7 +339,7 @@ class RelativeAttention(nn.Module):
             indices = indices.repeat(relative_matrix.size(0), 1, 1, 1)
         else:
             assert len(relative_matrix.size()) == len(indices.size()) # check that nothing sketchy is going on
-        print(indices.size())
+        #print(indices.size())
         proper_relative_matrix = relative_matrix.gather(-1, indices)
         return proper_relative_matrix
 
