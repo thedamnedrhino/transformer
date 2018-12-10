@@ -607,7 +607,7 @@ class SimpleLossCompute:
         return loss.item() * norm.float().item()
 
 
-def data_gen(V, batch, nbatches):
+def data_gen(V, batch, nbatches, cuda=False):
     "Generate random data for a src-tgt copy task."
     for i in range(nbatches):
         data = torch.from_numpy(np.random.randint(1, V, size=(batch, 10)))
@@ -615,6 +615,9 @@ def data_gen(V, batch, nbatches):
 
         src = Variable(data, requires_grad=False)
         tgt = Variable(data, requires_grad=False)
+        if cuda:
+            src.cuda()
+            tgt.cuda()
         yield Batch(src, tgt, 0)
 
 
@@ -660,6 +663,41 @@ def test_run(relative=False):
     print("average tps: {}".format(sum(all_tps) / len(all_tps)))
     print("average last 3 losses: {}".format(sum(losses[:-3]) / 3))
     print("last loss: {}".format(losses[len(losses) - 1]))
+    src = Variable(torch.LongTensor([[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]]))
+    src_mask = Variable(torch.ones(1, 1, 10))
+    print(greedy_decode(model, src, src_mask, max_len=10, start_symbol=1))
+
+def test_gpu(num_gpu, relative=False):
+    device_ids = list(range(num_gpu))
+    devices = [torch.device("cuda:{}".format(i)) for i in device_ids]
+    V = 11
+    criterion = LabelSmoothing(size=V, padding_idx=0, smoothing=0.0)
+    model = make_model(V, V, N=2, relative=relative)
+    model.cuda()
+    criterion.cuda()
+    model_par = nn.DataParallel(model, device_ids=device_ids)
+    model_opt = NoamOpt(model.src_embed[0].d_model, 1, 2000,
+                        torch.optim.Adam(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
+    import time
+    t = time.time()
+
+    for epoch in range(TRAIN_EPOCHS):
+        model_par.train()
+        run_epoch(data_gen(V, 30, 10, cuda=True),
+                  model_par,
+                  MultiGPULossCompute(model.generator, criterion,
+                                      devices=devices, opt=model_opt))
+        model_par.eval()
+        c = time.time()
+        print("iter: {}, time: {}".format(epoch, c - t))
+        t = c
+        loss = run_epoch(data_gen(V, 20, 2, cuda=True),
+                         model_par,
+                         MultiGPULossCompute(model.generator, criterion,
+                                             devices=devices, opt=None))
+        c = time.time()
+        print("time for eval: {}".format(t - c))
+        print("loss: {}".format(loss))
     src = Variable(torch.LongTensor([[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]]))
     src_mask = Variable(torch.ones(1, 1, 10))
     print(greedy_decode(model, src, src_mask, max_len=10, start_symbol=1))
@@ -924,6 +962,7 @@ if __name__ == '__main__':
     optparser.add_option("-s", "--batch-size", dest="batch_size", default=12000, help="batch size, default: 12000")
     optparser.add_option("-e", "--epochs", dest="epochs", default=10, help="number of epochs for training")
     optparser.add_option("-b", "--basic", dest="basic", default=False, action='store_true', help="whether to use the auto-generated one-to-one integer training, this is just a sanity test")
+    optparser.add_option("-g", "--gpu", dest="gpu", default=False, action='store_true', help="use gpu in the test")
     optparser.add_option("-r", "--relative", dest="relative", default=False, action='store_true', help="enable relative positions")
     optparser.add_option("-v", "--validate", dest="validate", default=None, help="run the model found in the file with dataset")
     optparser.add_option("-i", "--inputmodel", dest="model_input", default=None, help="load model to input")
@@ -934,7 +973,10 @@ if __name__ == '__main__':
         validate(opts.validate)
     elif opts.basic:
         print('basic')
-        test_run(relative=opts.relative)
+        if opts.gpu:
+            test_gpu(torch.cuda.device_count(), relative=opts.relative)
+        else:
+            test_run(relative=opts.relative)
     else:
         print('not basic')
         limit = opts.limit
