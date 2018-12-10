@@ -4,9 +4,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math, copy, time
 import warnings
+import spacy
+import datetime
+import torchtext.data.batch
 from nltk.translate.bleu_score import sentence_bleu
 from torch.autograd import Variable
 from torchtext import data, datasets
+
+
 
 import io
 
@@ -504,8 +509,8 @@ class MyIterator(data.Iterator):
             self.limit = None
         if self.train:
             def pool(d, random_shuffler):
-                for p in data.batch(d, self.batch_size * 100):
-                    p_batch = data.batch(
+                for p in torchtext.data.batch(d, self.batch_size * 100):
+                    p_batch = torchtext.data.batch(
                         sorted(p, key=self.sort_key),
                         self.batch_size, self.batch_size_fn)
                     yielded = 0
@@ -523,8 +528,8 @@ class MyIterator(data.Iterator):
         else:
             self.batches = []
             yielded = 0
-            for b in data.batch(self.data(), self.batch_size,
-                                self.batch_size_fn):
+            batch = torchtext.data.batch(self.data(), self.batch_size, self.batch_size_fn)
+            for b in batch:
                 if self.limit is not None:
                     if yielded >= self.limit:
                         break
@@ -620,35 +625,59 @@ EOS_WORD = '</s>'
 BLANK_WORD = "<blank>"
 
 
-def load_data(dimensions_only = False):
-    import spacy
-    spacy_de = spacy.load('de')
-    spacy_en = spacy.load('en')
+def get_tokenizer(lang):
+    if lang is 'en':
+        spacy_en = spacy.load('en')
+        def tokenize_en(text):
+            words =  [tok.text for tok in spacy_en.tokenizer(text)]
+            return words
+        return tokenize_en
+    elif lang is 'de':
+        spacy_de = spacy.load('de')
+        def tokenize_de(text):
+            return [tok.text for tok in spacy_de.tokenizer(text)]
 
-    def tokenize_de(text):
-        return [tok.text for tok in spacy_de.tokenizer(text)]
+        return tokenize_de
+    elif lang is 'fr':
+        spacy_fr = spacy.load('fr')
+        def tokenize_fr(text):
+            return [tok.text for tok in spacy_fr.tokenizer(text)]
+        return tokenize_fr
+    elif lang is 'es' or 'eu':
+        spacy_es = spacy.load('es')
+        def tokenize_es(text):
+            return [tok.text for tok in spacy_es.tokenizer(text)]
+        return tokenize_es
+    return str.split
 
-    def tokenize_en(text):
-        return [tok.text for tok in spacy_en.tokenizer(text)]
 
-    SRC = data.Field(tokenize=tokenize_de, pad_token=BLANK_WORD)
-    TGT = data.Field(tokenize=tokenize_en, init_token=BOS_WORD,
+def load_data(lang1 = 'de', lang2 = 'en', directory = None):
+
+    lang1_tokenizer = get_tokenizer(lang1)
+    lang2_tokenizer = get_tokenizer(lang2)
+
+    SRC = data.Field(tokenize=lang1_tokenizer, pad_token=BLANK_WORD)
+    TGT = data.Field(tokenize=lang2_tokenizer, init_token=BOS_WORD,
                      eos_token=EOS_WORD, pad_token=BLANK_WORD)
 
     MAX_LEN = 100
-    train, val, test = datasets.IWSLT.splits(
-        exts=('.de', '.en'), fields=(SRC, TGT),
-        filter_pred=lambda x: len(vars(x)['src']) <= MAX_LEN and
-                              len(vars(x)['trg']) <= MAX_LEN)
+
+    if directory:
+        train, val = datasets.TranslationDataset(path = directory, exts=('.'+lang1, '.'+lang2), fields=(SRC,TGT),
+                                                 filter_pred=lambda x: len(vars(x)['src']) <= MAX_LEN and len(
+                                                     vars(x)['trg']) <= MAX_LEN).split()
+    else:
+        train, val, test = datasets.IWSLT.splits(exts=('.de', '.en'),
+                                                 fields=(SRC, TGT),
+                                                 filter_pred=lambda x: len(vars(x)['src']) <= MAX_LEN and len(vars(x)['trg']) <= MAX_LEN)
     MIN_FREQ = 2
     SRC.build_vocab(train.src, min_freq=MIN_FREQ)
     TGT.build_vocab(train.trg, min_freq=MIN_FREQ)
     return train, val, SRC, TGT  # todo  find out exactly what each of these variables are
 
 
-def train_multi_gpu(num_gpu, output_model, in_model=None, data=None, limit = None, ):
-    if data is None:
-        data = load_data()
+def train_multi_gpu(num_gpu, output_model, in_model=None, data = load_data(), limit = None):
+
     device_ids = list(range(num_gpu))
     devices = [torch.device("cuda:{}".format(i)) for i in device_ids]
     train, val, SRC, TGT = data
@@ -678,42 +707,37 @@ def train_multi_gpu(num_gpu, output_model, in_model=None, data=None, limit = Non
     t = time.time()
 
     for epoch in range(TRAIN_EPOCHS):
+        print("Epoch {}:".format(epoch))
         model_par.train()
         run_epoch((rebatch(pad_idx, b) for b in train_iter),
                   model_par,
                   MultiGPULossCompute(model.generator, criterion,
                                       devices=devices, opt=model_opt))
         model_par.eval()
-        c = time.time()
-        print("iter: {}, time: {}".format(epoch, c - t))
-        t = c
-        loss = run_epoch((rebatch(pad_idx, b) for b in valid_iter),
+        t = time.time()
+        loss, elasped_time, avg_tokens_sec  = run_epoch((rebatch(pad_idx, b) for b in valid_iter),
                          model_par,
                          MultiGPULossCompute(model.generator, criterion,
                                              devices=devices, opt=None))
-        c = time.time()
-        print("time for eval: {}".format(t - c))
-        print("loss: {}".format(loss))
-    if output_model is not None:
+        print("Validation loss: {} \n Time for eval: {}".format(loss.item(),elasped_time))
         torch.save(model.state_dict(), output_model)
+    return model
 
 def load_model(model_file, src_len, tgt_len):
-    model = make_model(src_vocab= src_len, tgt_vocab=tgt_len, N=6)
+    model = make_model(src_len, tgt_len)
     with io.open(model_file, "rb") as file:
         model.load_state_dict(torch.load(file))
     model.cuda()
     return model
 
 
-def validate(model_file, num_gpu = torch.cuda.device_count()):
+def validate(model, num_gpu = torch.cuda.device_count(), data = load_data()):
     device_ids = list(range(num_gpu))
     devices = [torch.device("cuda:{}".format(i)) for i in device_ids]
 
-    train, val, SRC, TGT = load_data()
-    print(len(SRC.vocab))
-
-    model = load_model(model_file, len(SRC.vocab), len(TGT.vocab))
+    train, val, SRC, TGT = data
     model.eval()
+    BATCH_SIZE = 12000
     valid_iter = MyIterator(val, batch_size=BATCH_SIZE, device=devices[0],
                             repeat=False, sort_key=lambda x: (len(x.src), len(x.trg)),
                             batch_size_fn=batch_size_fn, train=False)
@@ -745,7 +769,8 @@ def validate(model_file, num_gpu = torch.cuda.device_count()):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             print("score: ", score)
-    print("average score: {}".format(sum(scores)/float(len(scores))))
+    print("average score: {}".format(sum(scores) / float(len(scores))))
+
 
 # +++++++++++++++ END real training ++++++++++++++++++++
 if __name__ == '__main__':
@@ -753,11 +778,11 @@ if __name__ == '__main__':
     optparser = optparse.OptionParser()
     # optparser.add_option("-d", "--datadir", dest="datadir", default="data", help="data directory (default=data)")
     optparser.add_option("-l", "--limit", type = "int", dest="limit", default=None, help="limit the number of training and evaluation samples")
-    optparser.add_option("-o", "--model-output", dest="model_output", default="model_out", help="output file for the model, defaults to model-{random_number}")
+    optparser.add_option("-o", "--model-output", dest="model_output", default=str(datetime.date.today()), help="output file for the model, defaults to model-{random_number}")
     optparser.add_option("-s", "--batch-size", dest="batch_size", default=12000, help="batch size, default: 12000")
     optparser.add_option("-e", "--epochs", dest="epochs", default=10, help="number of epochs for training")
     optparser.add_option("-b", "--basic", dest="basic", default=False, action='store_true', help="whether to use the auto-generated one-to-one integer training, this is just a sanity test")
-    optparser.add_option("-v", "--validate", dest="validate", default=None, help="run the model found in the file with dataset")
+    optparser.add_option("-v", "--validate", dest="validate", default=False, action='store_true', help="run the model found in the file with dataset")
     optparser.add_option("-i", "--inputmodel", dest="model_input", default=None, help="load model to input")
     optparser.add_option("-d", "--data-dir", dest="data_dir", default=None, help="Data directory to load dataset from")
     optparser.add_option("-1", "--lang1", dest="lang1", default=None, help="Input language extention name")
@@ -769,24 +794,19 @@ if __name__ == '__main__':
         data = load_data(lang1=opts.lang1, lang2=opts.lang2, directory=opts.data_dir)
     else:
         data = load_data()
-    if opts.validate:
-        print('validate')
-        validate(opts.validate, data=data)
-    elif opts.basic:
-        print('basic')
+
+    if opts.basic:
         test_run()
     else:
-        print('not basic')
         limit = opts.limit
         TRAIN_EPOCHS = int(opts.epochs)
         model_output_file = opts.model_output
         model_input_file = opts.model_input
-        if model_output_file is None:
-            import datetime
-            model_output_file = "model-{}".format(str(datetime.date.today()))
-        train_multi_gpu(torch.cuda.device_count(),
+        model = train_multi_gpu(torch.cuda.device_count(),
                         model_output_file, model_input_file,
                         data=data,
                         limit=int(limit) if limit is not None else limit)
+        if opts.validate:
+            validate(model, data=data)
 
 
