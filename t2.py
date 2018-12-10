@@ -242,9 +242,11 @@ class RelativeAttention(nn.Module):
         if dropout is not None:
             p_attn = dropout(p_attn)
 
-        return torch.matmul(p_attn, value) + self.get_proper_relative_submatrix(nbatches, sentence_size,
-                                                                                torch.matmul(p_attn, relative_value)
-                                                                                ), p_attn
+        print(p_attn.size())
+        print(relative_value.size())
+        relative = self.get_proper_relative_submatrix(nbatches, sentence_size, torch.matmul(p_attn, relative_value.transpose(-2, -1)))
+        print(relative.size())
+        return torch.matmul(p_attn, value) + relative, p_attn
 
     def get_relative_key_scores(self, query, relative_key): # this gets the second expression in the sum in equation (5) in the paper
         """
@@ -254,10 +256,15 @@ class RelativeAttention(nn.Module):
         """
         sentence_size = query.size(-2)
         d_q = query.size(-1)
+        print("ssize: {}".format(sentence_size))
+        print(d_q)
         assert 2*sentence_size - 1 == relative_key.size(-2)
         assert d_q == relative_key.size(-1) # some double checks as usual
         assert len(query.size()) == 4
         all_scores = torch.matmul(query, relative_key.transpose(-2, -1))
+        print(all_scores.size())
+        print(query.size())
+        print(relative_key.transpose(-2, -1).size())
         relative_scores = self.get_proper_relative_submatrix(query.size(0), sentence_size, all_scores)
         return relative_scores
 
@@ -281,17 +288,18 @@ class RelativeAttention(nn.Module):
         """
         assert relative_matrix.size(-2) == sentence_size # the matrix must cover the longest sentence
         assert relative_matrix.size(-1) == 2 * sentence_size - 1 # must cover distances
-        indices = torch.zeros([sentence_size, sentence_size])
+        indices = torch.zeros([sentence_size, sentence_size]).long()
         for i in range(sentence_size):
             for j in range(sentence_size):
-                indices[i][j] = sentence_size - i + j
-        indices = indices.repeat(self.h, sentence_size, sentence_size) # repeat for all heads
+                indices[i][j] = (sentence_size-1) - i + j # index sentence_size - 1 represents a distance of zero
+        indices = indices.repeat(self.h, 1, 1) # repeat for all heads
         if len(relative_matrix.size()) > len(indices.size()):
             assert len(relative_matrix.size()) == len(indices.size()) + 1 # make sure we only have an extra batch dimension
-            indices.unsqueeze(0).expand(nbatches, indices.size(1), indices.size(2)) # replicate the matrix for all batches
+            indices = indices.repeat(relative_matrix.size(0), 1, 1, 1)
         else:
             assert len(relative_matrix.size()) == len(indices.size()) # check that nothing sketchy is going on
-        proper_relative_matrix = relative_matrix.gather(relative_matrix, -1, indices)
+        print(indices.size())
+        proper_relative_matrix = relative_matrix.gather(-1, indices)
         return proper_relative_matrix
 
     def forward(self, query, key, value, mask=None, dropout=None):
