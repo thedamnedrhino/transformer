@@ -298,13 +298,13 @@ class RelativeAttention(nn.Module):
         assert coefficient_matrix.size(-1) == n # , "{}, {};;;;;q:{}++k:{}++v:{}".format(coefficient_matrix.size(), n, query.size(), key.size(), value.size())
         if n == 1:
             return coefficient_matrix # cover the edge case of sentence with one word
-        zero_pad = torch.zeros(coefficient_matrix.size(0), coefficient_matrix.size(1), coefficient_matrix.size(2), n-1, requires_grad=False)
+        zero_pad = torch.zeros(coefficient_matrix.size(0), coefficient_matrix.size(1), coefficient_matrix.size(2), n-1, requires_grad=False, device=coefficient_matrix.device)
         zero_cat = torch.cat((coefficient_matrix, zero_pad), -1)
         #print(coefficient_matrix.size())
         #print(zero_cat.size())
-        indices = torch.Tensor(coefficient_matrix.size(2), 2*n-1).long()
-        for i in range(int(indices.size(0))):
-            for j in range(int(indices.size(1))):
+        indices = [[None for j in range(2*n-1)] for i in range(coefficient_matrix.size(2))]
+        for i in range(len(indices)):
+            for j in range(len(indices[0])):
                 corresponding_index = i + j - (n - 1) 
                 if corresponding_index >= 0 and corresponding_index < n:
                     indices[i][j] = corresponding_index
@@ -313,6 +313,8 @@ class RelativeAttention(nn.Module):
 
         #print(indices)
         #print(zero_cat.data[0][0])
+        #indices = torch.tensor(, 2*n-1, device=coefficient_matrix.device).long()
+        indices = torch.tensor(indices, device=coefficient_matrix.device).long()
         indices = indices.unsqueeze(0).unsqueeze(0).expand(coefficient_matrix.size(0), coefficient_matrix.size(1), -1, -1)
         assert indices.size() == zero_cat.size()
         padded = zero_cat.gather(-1, indices)
@@ -338,7 +340,7 @@ class RelativeAttention(nn.Module):
         assert relative_matrix.size(-1) == 2 * sentence_size - 1 # must cover distances
         assert relative_matrix.size(-2) == q_sentence_size # this should ne the result of a multiplication with the left operand being the query variable, hence the same number of rows (sentence size of the query)
         sentence_size = int(sentence_size)
-        indices = torch.zeros([q_sentence_size, sentence_size], dtype=torch.long)
+        indices = torch.zeros([q_sentence_size, sentence_size], dtype=torch.long, device=relative_matrix.device)
         for i in range(q_sentence_size):
             for j in range(k_sentence_size):
                 indices[i][j] = (sentence_size - 1) - i + j # index sentence_size - 1 represents a distance of zero
