@@ -244,9 +244,9 @@ class RelativeAttention(nn.Module):
 
         print(p_attn.size())
         print(relative_value.size())
-        relative = self.get_proper_relative_submatrix(nbatches, sentence_size, torch.matmul(p_attn, relative_value.transpose(-2, -1)))
+        relative_value_scores = torch.matmul(p_attn, self.get_proper_relative_submatrix(nbatches, sentence_size, relative_value).transpose(-2, -1))
         print(relative.size())
-        return torch.matmul(p_attn, value) + relative, p_attn
+        return torch.matmul(p_attn, value) + relative_value_scores, p_attn
 
     def get_relative_key_scores(self, query, relative_key): # this gets the second expression in the sum in equation (5) in the paper
         """
@@ -286,7 +286,7 @@ class RelativeAttention(nn.Module):
         """
         relative_matrix: n x (2n-1) matrix, we want to extract a n x n matrix. i.e: a_i,j
         """
-        assert relative_matrix.size(-2) == sentence_size # the matrix must cover the longest sentence
+        assert relative_matrix.size(-2) == sentence_size, "{}, {}".format(relative_matrix.size(), (nbatches, sentence_size))# the matrix must cover the longest sentence
         assert relative_matrix.size(-1) == 2 * sentence_size - 1 # must cover distances
         indices = torch.zeros([sentence_size, sentence_size]).long()
         for i in range(sentence_size):
