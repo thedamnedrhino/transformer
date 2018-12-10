@@ -217,8 +217,8 @@ class RelativeAttention(nn.Module):
         self.h = h
         self.d_q = d_q
         # the following two parameters represent w_k and w_v in section 3.2 of the paper
-        self.w_k = nn.Parameter(torch.Tensor(2*cutoff-1, d_q)) # one row for each i in [-k, k] where k is the relative cutoff
-        self.w_v = nn.Parameter(torch.Tensor(2*cutoff-1, d_q)) # one row for each i in [-k, k] where k is the relative cutoff
+        self.w_k = nn.Parameter(torch.Tensor(2*cutoff+1, d_q)) # one row for each i in [-k, k] where k is the relative cutoff
+        self.w_v = nn.Parameter(torch.Tensor(2*cutoff+1, d_q)) # one row for each i in [-k, k] where k is the relative cutoff
 
 
     def relative_attention(self, query, key, value, mask=None, dropout=None):
@@ -234,33 +234,32 @@ class RelativeAttention(nn.Module):
         :return:
         """
         assert query.size(-1) == self.d_q
-        k_sentence_size = key.size(-2)
-        # v_sentence_size = value.size(-2)
-        relative_key = self.fit_to_size(k_sentence_size, self.w_k)
-        relative_value = self.fit_to_size(k_sentence_size, self.w_v) # we pad w_v to k_sentence_size to. see notes on expand_to_size() for why
-        #print('{}; {}; {}'.format(sentence_size, relative_key.size(), relative_value.size()))
+        q_sentence_size, k_sentence_size, v_sentence_size = (query.size(-2), key.size(-2), value.size(-2))
+        max_s_size = max(q_sentence_size, k_sentence_size, v_sentence_size)
+
+        relative_key = self.fit_to_size(max_s_size, self.w_k)
+        relative_value = self.fit_to_size(max_s_size, self.w_v) # we pad w_v to k_sentence_size to. see notes on expand_to_size() for why
+
         nbatches = query.size(0)
         base_scores = torch.matmul(query, key.transpose(-2, -1))
-        relative_key_scores = self.get_relative_key_scores(query, relative_key)
-        #print('******8{}'.format(relative_key_scores.size()))
-        #print('{};;;;{};;;;;{}'.format(base_scores.size(), query.size(), key.size()))
+        relative_key_scores = self.get_relative_key_scores(query, relative_key, k_sentence_size)
+
         scores = base_scores + relative_key_scores
+
         if mask is not None:
             scores = scores.masked_fill(mask == 0, -1e9)
+
         p_attn = F.softmax(scores, dim=-1)
         if dropout is not None:
             p_attn = dropout(p_attn)
 
-        #print(p_attn.size())
-        #print(relative_value.size())
-        relative_value_scores = torch.matmul(self.expand_to_size(k_sentence_size, p_attn), relative_value)
-        #print(relative_value_scores.size())
+        relative_value_scores = torch.matmul(self.expand_to_size(k_sentence_size, p_attn, query, key, value), relative_value)
         return torch.matmul(p_attn, value) + relative_value_scores, p_attn
 
-    def get_relative_key_scores(self, query, relative_key): # this gets the second expression in the sum in equation (5) in the paper
+    def get_relative_key_scores(self, query, relative_key, k_sentence_size): # this gets the second expression in the sum in equation (5) in the paper
         """
         :param query: n_q x d_k matrix
-        :param relative_key: (2n_k+1) x d_k matrix. The nth column represents distance zero. Columns to the left represent negative distances, and to the right positive.
+        :param relative_key: (2*max_sentence_size - 1) x d_k matrix. The nth column represents distance zero. Columns to the left represent negative distances, and to the right positive.
         :return:
         """
         q_sentence_size = query.size(-2)
@@ -270,23 +269,26 @@ class RelativeAttention(nn.Module):
         # assert 2*sentence_size - 1 == relative_key.size(-2) # this assertion is wrong. The number of rows of the query (i.e: sentence size) does not have to be the same as the number of rows of the key
         assert d_q == relative_key.size(-1) # some double checks as usual
         assert len(query.size()) == 4
+
         all_scores = torch.matmul(query, relative_key.transpose(-2, -1))
-        #print(all_scores.size())
-        #print(query.size())
-        #print(relative_key.transpose(-2, -1).size())
         # relative_scores = self.get_proper_relative_submatrix(query.size(0), q_sentence_size, all_scores) Had to change the sentence size argument, since query and key don't necessarilly have the same one
-        relative_scores = self.get_proper_relative_submatrix(query.size(0), q_sentence_size, (all_scores.size(-1)+1)/2, all_scores)
+        relative_scores = self.get_proper_relative_submatrix(query.size(0), q_sentence_size, k_sentence_size, (all_scores.size(-1)+1)/2, all_scores)
+        s([all_scores, relative_scores])
         return relative_scores
 
 
     def fit_to_size(self, sentence_size, relative_matrix):
-        padding_length = abs(((relative_matrix.size(-2) + 1) // 2 - sentence_size))
-        relative_matrix = self.pad_on_0th_dimension(padding_length, relative_matrix) # replicate items for (i-j) > k (or < -k). k is the cutoff
+        cutoff = (relative_matrix.size(-2) - 1)//2
+        padding_length = sentence_size - (cutoff + 1)
+        if padding_length > 0:
+            relative_matrix = self.pad_on_0th_dimension(padding_length, relative_matrix) # replicate items for (i-j) > k (or < -k). k is the cutoff
+        else:
+            relative_matrix = self.trim_on_0th_dimension(-padding_length, relative_matrix, cutoff)
         fit = relative_matrix.repeat(self.h, 1, 1) # repeat the matrix for all heads
         assert len(relative_matrix.size()) == len(fit.size())-1 # make sure we got we wanted from the head replication
         return fit
     
-    def expand_to_size(self, n, coefficient_matrix):
+    def expand_to_size(self, n, coefficient_matrix, query, key, value):
         """
         expand the jxn coefficient matrix to a jx(2n-1) one 
         by padding each row i with n-i-1 zeros before and i zeros after
@@ -294,7 +296,9 @@ class RelativeAttention(nn.Module):
         # none of the below assertions can be made. The coefficient matrix n_q x n_k where n_q and n_k are the sentence lengths of query and key. n is the sentence size of the value
         # assert coefficient_matrix.size(-2) == coefficient_matrix.size(-1), '{}'.format(coefficient_matrix.size()) 
         # assert coefficient_matrix.size(-2) == n
-        assert coefficient_matrix.size(-1) == n
+        assert coefficient_matrix.size(-1) == n # , "{}, {};;;;;q:{}++k:{}++v:{}".format(coefficient_matrix.size(), n, query.size(), key.size(), value.size())
+        if n == 1:
+            return coefficient_matrix # cover the edge case of sentence with one word
         zero_pad = torch.zeros(coefficient_matrix.size(0), coefficient_matrix.size(1), coefficient_matrix.size(2), n-1, requires_grad=False)
         zero_cat = torch.cat((coefficient_matrix, zero_pad), -1)
         #print(coefficient_matrix.size())
@@ -302,7 +306,7 @@ class RelativeAttention(nn.Module):
         indices = torch.Tensor(coefficient_matrix.size(2), 2*n-1).long()
         for i in range(int(indices.size(0))):
             for j in range(int(indices.size(1))):
-                corresponding_index = i + j - (n - 1) # the index of the column in the nxn column corresponding to the jth column of the ith row in the nx(2n-1) matrix
+                corresponding_index = i + j - (n) 
                 if corresponding_index >= 0 and corresponding_index < n:
                     indices[i][j] = corresponding_index
                 else:
@@ -317,21 +321,30 @@ class RelativeAttention(nn.Module):
                     
 
     def pad_on_0th_dimension(self, pad_length, matrix):
+        # pad the number the relative position matrix to cover all positions in the given sentence
         #print(pad_length)
         return F.pad(matrix[None, None, ...], (0, 0, pad_length, pad_length), mode='replicate').squeeze()
 
+    def trim_on_0th_dimension(self, trim_length, matrix, cutoff):
+        # trim the relative position matrix to the corresponding sentence length as the cutoff is greater than the sentence length
+        # dimension of matrix is 2*cutoff - 1 x _
+        indices = torch.tensor([n for n in range(trim_length, matrix.size(-2) - trim_length)])
+        print(indices)
+        s([matrix])
+        return matrix.index_select(-2, indices)
 
-    def get_proper_relative_submatrix(self, nbatches, q_sentence_size, sentence_size, relative_matrix):
+    def get_proper_relative_submatrix(self, nbatches, q_sentence_size, k_sentence_size, max_sentence_size, relative_matrix):
         """
-        relative_matrix: n x (2n-1) matrix, we want to extract a n x n matrix. i.e: a_i,j. this corresponds to extracting X_i x W_Q x a_ij from X_i x W_q x w_[-k:k] in equation (5)
+        relative_matrix: n_q x (2max_sentence_size - 1) matrix, we want to extract a n_q x n_k matrixx. i.e: a_i,j. this corresponds to extracting X_i x W_Q x a_ij from X_i x W_q x w_[-k:k] in equation (5)
         """
         # assert relative_matrix.size(-2) == sentence_size, "{}, {}".format(relative_matrix.size(), (nbatches, sentence_size))# the matrix must cover the longest sentence
+        sentence_size = max_sentence_size
         assert relative_matrix.size(-1) == 2 * sentence_size - 1 # must cover distances
         assert relative_matrix.size(-2) == q_sentence_size
         sentence_size = int(sentence_size)
         indices = torch.zeros([q_sentence_size, sentence_size], dtype=torch.long)
         for i in range(q_sentence_size):
-            for j in range(sentence_size):
+            for j in range(k_sentence_size):
                 indices[i][j] = (sentence_size-1) - i + j # index sentence_size - 1 represents a distance of zero
         indices = indices.repeat(self.h, 1, 1) # repeat for all heads
         if len(relative_matrix.size()) > len(indices.size()):
@@ -634,19 +647,17 @@ def test_run(relative=False):
     times = []
     all_tps = []  # array of tokens per sec
     losses = []
-    for epoch in range(10):
+    for epoch in range(1):
         model.train()
-        loss, t, tokens_per_sec = run_epoch(data_gen(V, 30, 10), model,
+        loss, t, tokens_per_sec = run_epoch(data_gen(V, 20, 10), model,
                                             SimpleLossCompute(model.generator, criterion, model_opt))
         times.append(t)
         all_tps.append(tokens_per_sec)
         losses.append(loss)
         model.eval()
-        # model.train()
-        # print(run_epoch(data_gen(V, 30, 5), model,
-        #                 SimpleLossCompute(model.generator, criterion, None)))
+        print(run_epoch(data_gen(V, 30, 1), model,
+                        SimpleLossCompute(model.generator, criterion, None)))
         # print(time.time() - t)
-        # model.eval()
 
     # model.eval()
     print("average time: {}".format(sum(times) / len(times)))
