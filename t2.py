@@ -333,7 +333,7 @@ class RelativeAttention(nn.Module):
     def trim_on_0th_dimension(self, trim_length, matrix, cutoff):
         # trim the relative position matrix to the corresponding sentence length as the cutoff is greater than the sentence length
         # dimension of matrix is 2*cutoff - 1 x _
-        indices = torch.tensor([n for n in range(trim_length, matrix.size(-2) - trim_length)])
+        indices = torch.tensor([n for n in range(trim_length, matrix.size(-2) - trim_length)], device=matrix.device)
         return matrix.index_select(-2, indices)
 
     def get_proper_relative_submatrix(self, nbatches, q_sentence_size, k_sentence_size, max_sentence_size, relative_matrix):
