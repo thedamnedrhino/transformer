@@ -861,6 +861,30 @@ def get_tokenizer(lang):
         return tokenize_es
     return str.split
 
+def load_data_default():
+    import spacy
+    spacy_de = spacy.load('de')
+    spacy_en = spacy.load('en')
+
+    def tokenize_de(text):
+        return [tok.text for tok in spacy_de.tokenizer(text)]
+
+    def tokenize_en(text):
+        return [tok.text for tok in spacy_en.tokenizer(text)]
+
+    SRC = data.Field(tokenize=tokenize_de, pad_token=BLANK_WORD)
+    TGT = data.Field(tokenize=tokenize_en, init_token = BOS_WORD,
+                     eos_token = EOS_WORD, pad_token=BLANK_WORD)
+
+    MAX_LEN = 100
+    train, val, test = datasets.IWSLT.splits(
+        exts=('.de', '.en'), fields=(SRC, TGT),
+        filter_pred=lambda x: len(vars(x)['src']) <= MAX_LEN and
+            len(vars(x)['trg']) <= MAX_LEN)
+    MIN_FREQ = 2
+    SRC.build_vocab(train.src, min_freq=MIN_FREQ)
+    TGT.build_vocab(train.trg, min_freq=MIN_FREQ)
+    return train, val, SRC, TGT
 
 def load_data(lang1 = 'de', lang2 = 'en', directory = None):
 
@@ -886,10 +910,7 @@ def load_data(lang1 = 'de', lang2 = 'en', directory = None):
     TGT.build_vocab(train.trg, min_freq=MIN_FREQ)
     return train, val, SRC, TGT  # todo  find out exactly what each of these variables are
 
-
-def train_multi_gpu(num_gpu, output_model, in_model=None, data=None, limit = None, relative=False):
-    if data is None:
-        data = load_data()
+def train_multi_gpu(num_gpu, output_model,data, in_model=None, limit = None, relative=False):
     device_ids = list(range(num_gpu))
     devices = [torch.device("cuda:{}".format(i)) for i in device_ids]
     train, val, SRC, TGT = data
@@ -983,6 +1004,11 @@ def validate(model, num_gpu = torch.cuda.device_count(), data = load_data()):
             print("score: ", score)
     print("average score: {}".format(sum(scores) / float(len(scores))))
 
+def extract_exts(filename):
+    splits = filename.split('.')
+    ext_a, ext_b = splits[-1].split('-')
+    return ext_a, ext_b
+
 
 # +++++++++++++++ END real training ++++++++++++++++++++
 if __name__ == '__main__':
@@ -995,14 +1021,19 @@ if __name__ == '__main__':
     optparser.add_option("-e", "--epochs", dest="epochs", default=10, help="number of epochs for training")
     optparser.add_option("-b", "--basic", dest="basic", default=False, action='store_true', help="whether to use the auto-generated one-to-one integer training, this is just a sanity test")
     optparser.add_option("-r", "--relative", dest="relative", default=False, action='store_true', help="enable relative positions")
-    optparser.add_option("-v", "--validate", dest="validate", default=None, help="run the model found in the file with dataset")
+    optparser.add_option("-v", "--validate", dest="validate", default=False, action='store_true', help="run the model found in the file with dataset")
     optparser.add_option("-i", "--inputmodel", dest="model_input", default=None, help="load model to input")
-    optparser.add_option("-d", "--data-dir", dest="data_dir", default=None, help="Data directory to load dataset from")
-    optparser.add_option("-1", "--lang1", dest="lang1", default=None, help="Input language extention name")
-    optparser.add_option("-2", "--lang2", dest="lang2", default=None, help="Input language extention name")
+    optparser.add_option("-d", "--data-dir", dest="data_dir", default=None, help="Data directory to load the dataset from")
+
     (opts, _) = optparser.parse_args()
     BATCH_SIZE=int(opts.batch_size)
-    TRAIN_EPOCHS = int(opts.epochs)
+    if opts.data_dir:
+        lang1, lang2 = extract_exts(opts.data_dir)
+        print("loading data from:\n{}\n{}".format(opts.data_dir + '.' + lang1, opts.data_dir + '.' + lang2))
+        data = load_data(lang1, lang2, directory=opts.data_dir)
+    else:
+        print("loading default data")
+        data = load_data_default()
 
     if opts.basic:
         print('basic')
@@ -1011,13 +1042,8 @@ if __name__ == '__main__':
         limit = opts.limit
         model_output_file = opts.model_output
         model_input_file = opts.model_input
-        train_multi_gpu(torch.cuda.device_count(), model_output_file, model_input_file, limit=int(limit) if limit is not None else limit, relative=opts.relative)
+        model = train_multi_gpu(torch.cuda.device_count(), model_output_file, data, model_input_file, limit=int(limit) if limit is not None else limit, relative=opts.relative)
         if opts.validate:
-            if opts.data_dir:
-                print("loading data from {}".format(opts.data_dir))
-                data = load_data(lang1=opts.lang1, lang2=opts.lang2, directory=opts.data_dir)
-            else:
-                data = load_data()
             validate(model, data=data)
 
 
