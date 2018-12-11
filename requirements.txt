@@ -1,5 +1,4 @@
-torch_cpu
-torch_gpu
+torch
 torchtext
 spacy
 numpy
