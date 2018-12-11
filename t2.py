@@ -1027,7 +1027,7 @@ if __name__ == '__main__':
 
     (opts, _) = optparser.parse_args()
     BATCH_SIZE=int(opts.batch_size)
-
+    TRAIN_EPOCHS=int(opts.epochs)
     if opts.basic:
         print('basic')
         test_run(relative=opts.relative)
