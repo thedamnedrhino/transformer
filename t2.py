@@ -964,7 +964,7 @@ def load_model(model_file, src_len, tgt_len):
     return model
 
 
-def validate(model, num_gpu = torch.cuda.device_count(), data = load_data()):
+def validate(model, num_gpu = torch.cuda.device_count(), data = None):
     device_ids = list(range(num_gpu))
     devices = [torch.device("cuda:{}".format(i)) for i in device_ids]
 
@@ -1027,18 +1027,19 @@ if __name__ == '__main__':
 
     (opts, _) = optparser.parse_args()
     BATCH_SIZE=int(opts.batch_size)
-    if opts.data_dir:
-        lang1, lang2 = extract_exts(opts.data_dir)
-        print("loading data from:\n{}\n{}".format(opts.data_dir + '.' + lang1, opts.data_dir + '.' + lang2))
-        data = load_data(lang1, lang2, directory=opts.data_dir)
-    else:
-        print("loading default data")
-        data = load_data_default()
 
     if opts.basic:
         print('basic')
         test_run(relative=opts.relative)
     else:
+        if opts.data_dir:
+            directory = opts.data_dir
+            lang1, lang2 = extract_exts(opts.data_dir)
+            print("loading data from:\n{}\n{}".format(opts.data_dir + '.' + lang1, opts.data_dir + '.' + lang2))
+            data = load_data(lang1, lang2, directory=opts.data_dir)
+        else:
+            print("loading default data")
+            data = load_data_default()
         limit = opts.limit
         model_output_file = opts.model_output
         model_input_file = opts.model_input
